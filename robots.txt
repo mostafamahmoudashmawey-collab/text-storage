@@ -1,3 +1,13 @@
+# Inter Storage Robots.txt
+# تحسين الأرشفة لبراند Inter Storage
+
 User-agent: *
 Allow: /
-Sitemap: https://text-storage-two.vercel.app/sitemap.xml
+
+# استثناء ملفات الإعدادات والبيئة الحساسة من الأرشفة
+Disallow: /.env
+Disallow: /node_modules/
+Disallow: /package.json
+
+# رابط خريطة الموقع لسرعة الزحف
+Sitemap: https://inter-storage.vercel.app/sitemap.xml
