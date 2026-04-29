@@ -417,7 +417,7 @@ export default function App() {
   return (
     <div className="min-h-screen w-full bg-black relative flex flex-col items-center justify-center gap-4 text-white" dir="rtl">
       <div className="absolute top-0 left-0 p-4 text-lg text-gray-500 font-sans flex flex-col" dir="ltr">
-        <span>Text storage</span>
+        <span>Inter Storage</span>
       </div>
 
       {currentView === 'dashboard' && (
