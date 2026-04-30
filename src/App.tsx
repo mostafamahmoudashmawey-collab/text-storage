@@ -330,6 +330,7 @@ export default function App() {
 
   const [selectedTexts, setSelectedTexts] = useState<Set<string>>(new Set());
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const pressTimerRef = useRef<NodeJS.Timeout | null>(null);
   const wasLongPressedRef = useRef(false);
 
@@ -377,6 +378,50 @@ export default function App() {
     setSelectedTexts(new Set());
     setShowDeleteConfirm(false);
   };
+
+  useEffect(() => {
+    (window as any).interStorageExt = {
+      addText: async (text: string) => {
+        if (!text || !currentUserId) return;
+        const textContent = text.trim();
+        if (!textContent) return;
+        
+        const newItem: TextItem = {
+          id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(),
+          userId: currentUserId,
+          text: textContent,
+          timestamp: Date.now()
+        };
+        await saveTextToDB(newItem);
+        setTexts((prev) => [newItem, ...prev]);
+        return newItem.id;
+      },
+      deleteText: async (id: string) => {
+        if (!currentUserId) return;
+        await deleteTextFromDB(id);
+        setTexts((prev) => prev.filter((t) => t.id !== id));
+      },
+      getTexts: async () => {
+        if (!currentUserId) return [];
+        return await getTextsFromLocalDB(currentUserId);
+      },
+      getCurrentUserId: () => currentUserId,
+      login: (userId: string) => {
+        setCurrentUserId(userId);
+        setCurrentView('dashboard');
+      },
+      logout: () => {
+        handleLogout();
+      }
+    };
+    
+    // Also dispatch a custom event indicating API is ready
+    window.dispatchEvent(new CustomEvent('interStorageReady'));
+
+    return () => {
+      delete (window as any).interStorageExt;
+    };
+  }, [currentUserId]);
 
   useEffect(() => {
     if (currentView === 'dashboard' && currentUserId) {
@@ -987,25 +1032,29 @@ export default function App() {
               )}
             </div>
 
-            <button 
-              onClick={() => {
-                setShowUserIdPopup(false);
-                setShowUserIdPassword(false);
-                setShowVerifyPassword(false);
-                setIsEditingPassword(false);
-                setVerifyPasswordInput('');
-                setVerifyError(false);
-              }} 
-              className="mt-2 w-full cursor-pointer bg-white hover:bg-gray-200 text-black font-medium py-3 px-8 rounded-full transition-all hover:scale-105 active:scale-95 text-lg"
-            >
-              اغلاق
-            </button>
-            <button 
-              onClick={handleLogout} 
-              className="w-full cursor-pointer bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 font-medium py-3 px-8 rounded-full transition-all hover:scale-105 active:scale-95 text-lg mt-0"
-            >
-              تسجيل الخروج
-            </button>
+            <div className="flex flex-col gap-3 mt-4 w-full">
+              <button 
+                id="close-profile-btn"
+                onClick={() => {
+                  setShowUserIdPopup(false);
+                  setShowUserIdPassword(false);
+                  setShowVerifyPassword(false);
+                  setIsEditingPassword(false);
+                  setVerifyPasswordInput('');
+                  setVerifyError(false);
+                }} 
+                className="w-full cursor-pointer bg-white hover:bg-gray-200 text-black font-medium py-3 px-8 rounded-full transition-all hover:scale-105 active:scale-95 text-lg"
+              >
+                اغلاق
+              </button>
+              <button 
+                id="logout-btn"
+                onClick={() => setShowLogoutConfirm(true)} 
+                className="w-3/4 mx-auto cursor-pointer bg-transparent text-red-500 hover:text-red-400 font-medium py-1.5 rounded-full transition-all text-xs"
+              >
+                تسجيل الخروج
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -1295,6 +1344,35 @@ export default function App() {
           </div>
         </div>
       )}
+      {showLogoutConfirm && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm px-4" onClick={() => setShowLogoutConfirm(false)}>
+          <div 
+             className="bg-[#111] border border-white/10 p-6 rounded-3xl flex flex-col gap-6 w-full max-w-sm shadow-[0_0_40px_rgba(0,0,0,0.8)] relative text-center"
+             onClick={(e) => e.stopPropagation()}
+             dir="rtl"
+          >
+            <div className="text-xl text-white font-medium">هل أنت متأكد أنك تريد تسجيل الخروج؟</div>
+            <div className="flex gap-4 w-full">
+              <button 
+                onClick={() => {
+                  setShowLogoutConfirm(false);
+                  handleLogout();
+                }} 
+                className="flex-1 cursor-pointer bg-red-500 hover:bg-red-600 text-white font-medium py-3 rounded-full transition-all hover:scale-105 active:scale-95 text-lg"
+              >
+                نعم
+              </button>
+              <button 
+                onClick={() => setShowLogoutConfirm(false)} 
+                className="flex-1 cursor-pointer bg-white/10 hover:bg-white/20 text-white font-medium py-3 rounded-full transition-all hover:scale-105 active:scale-95 text-lg"
+              >
+                لا
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
