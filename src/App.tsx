@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Eye, EyeOff, Plus, User, Trash2, Pencil, Copy, Check } from 'lucide-react';
+import { Eye, EyeOff, Plus, User, Trash2, Pencil, Copy, Check, X } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { db } from './db';
 
@@ -818,8 +818,21 @@ export default function App() {
 
       {showUserIdPopup && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4">
-          <div className="bg-[#111] border border-white/10 p-8 rounded-3xl flex flex-col items-center gap-6 w-full max-w-sm shadow-[0_0_40px_rgba(0,0,0,0.8)]">
-            <div className="text-xl text-gray-300 font-light">المعرف الخاص بك</div>
+          <div className="bg-[#111] border border-white/10 p-8 rounded-3xl flex flex-col items-center gap-6 w-full max-w-sm shadow-[0_0_40px_rgba(0,0,0,0.8)] relative">
+            <button 
+              onClick={() => {
+                setShowUserIdPopup(false);
+                setShowUserIdPassword(false);
+                setShowVerifyPassword(false);
+                setIsEditingPassword(false);
+                setVerifyPasswordInput('');
+                setVerifyError(false);
+              }} 
+              className="absolute top-6 left-6 text-gray-500 hover:text-white transition-colors cursor-pointer"
+            >
+              <X size={20} />
+            </button>
+            <div className="text-xl text-gray-300 font-light mt-2">المعرف الخاص بك</div>
             <div className="flex items-center gap-2 w-full">
               <div className="bg-black border border-white/5 rounded-2xl py-3 px-4 text-center text-3xl font-mono tracking-[0.5em] text-white w-full" dir="ltr">
                 {currentUserId}
@@ -1034,23 +1047,9 @@ export default function App() {
 
             <div className="flex flex-col gap-3 mt-4 w-full">
               <button 
-                id="close-profile-btn"
-                onClick={() => {
-                  setShowUserIdPopup(false);
-                  setShowUserIdPassword(false);
-                  setShowVerifyPassword(false);
-                  setIsEditingPassword(false);
-                  setVerifyPasswordInput('');
-                  setVerifyError(false);
-                }} 
-                className="w-full cursor-pointer bg-white hover:bg-gray-200 text-black font-medium py-3 px-8 rounded-full transition-all hover:scale-105 active:scale-95 text-lg"
-              >
-                اغلاق
-              </button>
-              <button 
                 id="logout-btn"
                 onClick={() => setShowLogoutConfirm(true)} 
-                className="w-3/4 mx-auto cursor-pointer bg-transparent text-red-500 hover:text-red-400 font-medium py-1.5 rounded-full transition-all text-xs"
+                className="w-full cursor-pointer bg-transparent text-red-500 hover:text-red-400 font-medium py-2 transition-all hover:scale-105 active:scale-95 text-base border-none outline-none mt-2"
               >
                 تسجيل الخروج
               </button>
@@ -1354,6 +1353,12 @@ export default function App() {
             <div className="text-xl text-white font-medium">هل أنت متأكد أنك تريد تسجيل الخروج؟</div>
             <div className="flex gap-4 w-full">
               <button 
+                onClick={() => setShowLogoutConfirm(false)} 
+                className="flex-1 cursor-pointer bg-white/10 hover:bg-white/20 text-white font-medium py-3 rounded-full transition-all hover:scale-105 active:scale-95 text-lg"
+              >
+                لا
+              </button>
+              <button 
                 onClick={() => {
                   setShowLogoutConfirm(false);
                   handleLogout();
@@ -1361,12 +1366,6 @@ export default function App() {
                 className="flex-1 cursor-pointer bg-red-500 hover:bg-red-600 text-white font-medium py-3 rounded-full transition-all hover:scale-105 active:scale-95 text-lg"
               >
                 نعم
-              </button>
-              <button 
-                onClick={() => setShowLogoutConfirm(false)} 
-                className="flex-1 cursor-pointer bg-white/10 hover:bg-white/20 text-white font-medium py-3 rounded-full transition-all hover:scale-105 active:scale-95 text-lg"
-              >
-                لا
               </button>
             </div>
           </div>
