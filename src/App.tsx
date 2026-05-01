@@ -263,7 +263,9 @@ export default function App() {
   const [showSignupPassword, setShowSignupPassword] = useState(false);
   
   const [loginId, setLoginId] = useState('');
+  const [loginIdError, setLoginIdError] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
+  const [loginPasswordError, setLoginPasswordError] = useState('');
   const [showLoginPassword, setShowLoginPassword] = useState(false);
 
   const [currentUserId, setCurrentUserId] = useState('');
@@ -629,11 +631,15 @@ export default function App() {
               pattern="[0-9]*"
               maxLength={5}
               value={loginId}
-              onChange={(e) => setLoginId(e.target.value.replace(/[^0-9]/g, ''))}
-              className="bg-white/5 border border-white/20 rounded-xl py-3 px-4 text-center text-2xl tracking-[0.5em] text-white focus:outline-none focus:border-white transition-colors placeholder:text-gray-700 font-mono"
+              onChange={(e) => {
+                setLoginId(e.target.value.replace(/[^0-9]/g, ''));
+                setLoginIdError('');
+              }}
+              className={`bg-white/5 border ${loginIdError ? 'border-red-500' : 'border-white/20'} rounded-xl py-3 px-4 text-center text-2xl tracking-[0.5em] text-white focus:outline-none focus:border-white transition-colors placeholder:text-gray-700 font-mono`}
               placeholder="•••••"
               dir="ltr"
             />
+            {loginIdError && <div className="text-red-500 text-sm text-center font-medium mt-1">{loginIdError}</div>}
           </div>
 
           <div className="flex flex-col gap-3 w-full">
@@ -646,6 +652,7 @@ export default function App() {
                 maxLength={5}
                 value={showLoginPassword ? loginPassword : loginPassword.replace(/./g, '•')}
                 onChange={(e) => {
+                  setLoginPasswordError('');
                   if (showLoginPassword) {
                     setLoginPassword(e.target.value.replace(/[^0-9]/g, ''));
                   } else {
@@ -662,7 +669,7 @@ export default function App() {
                     setLoginPassword(next.slice(0, 5));
                   }
                 }}
-                className="w-full bg-white/5 border border-white/20 rounded-xl py-3 px-4 text-center text-2xl tracking-[0.5em] text-white focus:outline-none focus:border-white transition-colors placeholder:text-gray-700 font-mono"
+                className={`w-full bg-white/5 border ${loginPasswordError ? 'border-red-500' : 'border-white/20'} rounded-xl py-3 px-4 text-center text-2xl tracking-[0.5em] text-white focus:outline-none focus:border-white transition-colors placeholder:text-gray-700 font-mono`}
                 placeholder="•••••"
                 dir="ltr"
               />
@@ -674,11 +681,14 @@ export default function App() {
                 {showLoginPassword ? <Eye size={20} /> : <EyeOff size={20} />}
               </button>
             </div>
+            {loginPasswordError && <div className="text-red-500 text-sm text-center font-medium mt-1">{loginPasswordError}</div>}
           </div>
 
           <div className="flex flex-col w-full gap-3 mt-4">
             <button 
               onClick={async () => {
+                setLoginIdError('');
+                setLoginPasswordError('');
                 const result = await loginUser(loginId, loginPassword);
                 if (result.isValid) {
                   await syncTextsFromRemoteDB(loginId);
@@ -687,7 +697,13 @@ export default function App() {
                   saveSession(loginId, loginPassword);
                   setCurrentView('dashboard');
                 } else {
-                  alert(result.error);
+                  if (result.error === 'لا يوجد المعرف') {
+                    setLoginIdError('عذرا هذا المعرف غير موجود');
+                  } else if (result.error === 'كلمة المرور خطا') {
+                    setLoginPasswordError('عذرا كلمة المرور خاطئة');
+                  } else {
+                    alert(result.error);
+                  }
                 }
               }}
               disabled={loginId.length !== 5 || loginPassword.length !== 5}
