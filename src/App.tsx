@@ -457,7 +457,9 @@ export default function App() {
     try {
       const res = await fetch(`/api/images?user_id=${userId}`);
       if (res.ok) {
-        const data = await res.json();
+        const text = await res.text();
+        if (!text) return; // empty body
+        const data = JSON.parse(text);
         
         // Transform the images to array and fetch local_url for each
         const imagesWithUrl = await Promise.all(data.images.map(async (img: any) => {
@@ -478,17 +480,20 @@ export default function App() {
           try {
             const urlRes = await fetch(`/api/image-url/${img.telegram_file_id}`);
             if (urlRes.ok) {
-              const urlData = await urlRes.json();
-              if (urlData.url) {
-                // Save to cache
-                try {
-                  localStorage.setItem(`img_url_${img.telegram_file_id}`, JSON.stringify({
-                    url: urlData.url,
-                    timestamp: Date.now()
-                  }));
-                } catch(e) {}
+              const urlText = await urlRes.text();
+              if (urlText) {
+                const urlData = JSON.parse(urlText);
+                if (urlData.url) {
+                  // Save to cache
+                  try {
+                    localStorage.setItem(`img_url_${img.telegram_file_id}`, JSON.stringify({
+                      url: urlData.url,
+                      timestamp: Date.now()
+                    }));
+                  } catch(e) {}
+                  return { ...img, local_url: urlData.url };
+                }
               }
-              return { ...img, local_url: urlData.url };
             }
           } catch(e) {}
           return img;
@@ -1284,9 +1289,25 @@ export default function App() {
                         body: formData,
                       });
 
-                      const data = await res.json();
+                      let errorMsg = 'فشل الرفع';
+                      try {
+                        if (res.status === 413) {
+                          errorMsg = 'حجم الصورة كبير جداً. يرجى اختيار صورة أصغر.';
+                        } else {
+                          const text = await res.text();
+                          if (text) {
+                            const data = JSON.parse(text);
+                            if (!res.ok) errorMsg = data.error || errorMsg;
+                          } else if (!res.ok) {
+                            errorMsg = `Server error (${res.status})`;
+                          }
+                        }
+                      } catch (e) {
+                         if (!res.ok) errorMsg = `Server error (${res.status})`;
+                      }
+
                       if (!res.ok) {
-                        throw new Error(data.error || 'فشل الرفع');
+                        throw new Error(errorMsg);
                       }
 
                       // Successfully uploaded, refresh images

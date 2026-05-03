@@ -15,11 +15,24 @@ async function startServer() {
   // Middleware to parse JSON
   app.use(express.json());
 
-  // Configure multer (memory storage)
-  const upload = multer({ storage: multer.memoryStorage() });
+  // Configure multer (memory storage) with 10MB limit
+  const upload = multer({ 
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 10 * 1024 * 1024 }
+  });
 
   // Upload endpoint
-  app.post("/api/upload-image", upload.single("image"), async (req, res) => {
+  app.post("/api/upload-image", (req, res, next) => {
+    upload.single("image")(req, res, (err) => {
+      if (err) {
+        if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+          return res.status(413).json({ error: "حجم الصورة كبير جداً (الحد الأقصى 10 ميجابايت)" });
+        }
+        return res.status(400).json({ error: err.message });
+      }
+      next();
+    });
+  }, async (req, res) => {
     try {
       const { user_id, image_title } = req.body;
       const file = req.file;
