@@ -3,6 +3,7 @@ import { createServer as createViteServer } from "vite";
 import path from "path";
 import multer from "multer";
 import { db } from "./src/db.js";
+import cors from "cors";
 import "dotenv/config";
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "8695643247:AAHJcX4SfuXPs8e7uPzfvtwUBB-bjlF2l00";
@@ -12,8 +13,16 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  // Add CORS
+  app.use(cors());
+
   // Middleware to parse JSON
   app.use(express.json());
+
+  app.use((req, res, next) => {
+    console.log(`[REQUEST] ${req.method} ${req.originalUrl}`);
+    next();
+  });
 
   // Configure multer (memory storage) with 10MB limit
   const upload = multer({ 
@@ -21,8 +30,15 @@ async function startServer() {
     limits: { fileSize: 10 * 1024 * 1024 }
   });
 
-  // Upload endpoint
-  app.post("/api/upload-image", (req, res, next) => {
+  // Upload endpoint (using app.use to catch OPTIONS, POST, etc.)
+  app.use("/api/upload-image", (req, res, next) => {
+    if (req.method === 'OPTIONS') {
+      return res.status(200).end();
+    }
+    if (req.method !== 'POST') {
+      return res.status(405).json({ error: 'Method not allowed' });
+    }
+    
     upload.single("image")(req, res, (err) => {
       if (err) {
         if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
