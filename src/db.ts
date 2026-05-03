@@ -22,16 +22,6 @@ export const initDB = async () => {
         timestamp INTEGER NOT NULL
       )
     `);
-
-    await db.execute(`
-      CREATE TABLE IF NOT EXISTS images (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        image_title TEXT NOT NULL,
-        telegram_file_id TEXT NOT NULL,
-        created_at INTEGER NOT NULL
-      )
-    `);
   } catch (e) {
     console.error("Failed to init db", e);
   }
