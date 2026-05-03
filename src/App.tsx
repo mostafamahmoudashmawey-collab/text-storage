@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Eye, EyeOff, Plus, User, Trash2, Pencil, Copy, Check, X } from 'lucide-react';
-import { useState, useEffect, useRef } from 'react';
+import { Eye, EyeOff, Plus, User, Trash2, Pencil, Copy, Check, X, Image as ImageIcon, ImagePlus } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
 import { db } from './db';
 
 interface TextItem {
@@ -12,6 +12,15 @@ interface TextItem {
   userId: string;
   text: string;
   timestamp: number;
+}
+
+interface ImageItem {
+  id: string;
+  user_id: string;
+  image_title: string;
+  telegram_file_id: string;
+  created_at: number;
+  local_url?: string;
 }
 
 const initLocalDB = (): Promise<IDBDatabase> => {
@@ -115,7 +124,7 @@ const syncTextsFromRemoteDB = async (userId: string) => {
   }
 };
 
-const deleteTextsFromDB = async (ids: string[]) => {
+const deleteItemsFromDB = async (ids: string[]) => {
   if (ids.length === 0) return true;
   
   try {
@@ -135,6 +144,11 @@ const deleteTextsFromDB = async (ids: string[]) => {
     const placeholders = ids.map(() => '?').join(',');
     await db.execute({
       sql: `DELETE FROM texts WHERE id IN (${placeholders})`,
+      args: ids
+    });
+    
+    await db.execute({
+      sql: `DELETE FROM images WHERE id IN (${placeholders})`,
       args: ids
     });
   } catch (e) {
@@ -317,8 +331,17 @@ export default function App() {
   const [editTextInput, setEditTextInput] = useState('');
   
   const [texts, setTexts] = useState<TextItem[]>([]);
+  const [images, setImages] = useState<ImageItem[]>([]);
   const [expandedTexts, setExpandedTexts] = useState<Set<string>>(new Set());
   const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const [showImageUploadPopup, setShowImageUploadPopup] = useState(false);
+  const [imageTitle, setImageTitle] = useState('');
+  const [selectedImageFile, setSelectedImageFile] = useState<File | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
+  
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleCopyId = (id: string, e?: React.MouseEvent | React.TouchEvent) => {
     if (e) {
@@ -374,9 +397,14 @@ export default function App() {
   };
 
   const deleteSelectedTexts = async () => {
-    const idsToDelete = Array.from(selectedTexts);
-    await deleteTextsFromDB(idsToDelete);
+    const idsToDelete = Array.from(selectedTexts) as string[];
+    
+    // Text IDs vs Image IDs: We can just attempt to delete from both tables for all chosen IDs.
+    await deleteItemsFromDB(idsToDelete);
+    
     setTexts(prev => prev.filter(t => !selectedTexts.has(t.id)));
+    setImages(prev => prev.filter(img => !selectedTexts.has(img.id)));
+    
     setSelectedTexts(new Set());
     setShowDeleteConfirm(false);
   };
@@ -400,7 +428,7 @@ export default function App() {
       },
       deleteText: async (id: string) => {
         if (!currentUserId) return;
-        await deleteTextFromDB(id);
+        await deleteItemsFromDB([id]);
         setTexts((prev) => prev.filter((t) => t.id !== id));
       },
       getTexts: async () => {
@@ -425,9 +453,58 @@ export default function App() {
     };
   }, [currentUserId]);
 
+  const fetchImages = async (userId: string) => {
+    try {
+      const res = await fetch(`/api/images?user_id=${userId}`);
+      if (res.ok) {
+        const data = await res.json();
+        
+        // Transform the images to array and fetch local_url for each
+        const imagesWithUrl = await Promise.all(data.images.map(async (img: any) => {
+          // Check cache first
+          try {
+            const cacheKey = `img_url_${img.telegram_file_id}`;
+            const cached = localStorage.getItem(cacheKey);
+            if (cached) {
+              const parsed = JSON.parse(cached);
+              // Check if it's less than 45 minutes old
+              if (Date.now() - parsed.timestamp < 45 * 60 * 1000) {
+                return { ...img, local_url: parsed.url };
+              }
+            }
+          } catch(e) {}
+
+          // Fetch if not cached or expired
+          try {
+            const urlRes = await fetch(`/api/image-url/${img.telegram_file_id}`);
+            if (urlRes.ok) {
+              const urlData = await urlRes.json();
+              if (urlData.url) {
+                // Save to cache
+                try {
+                  localStorage.setItem(`img_url_${img.telegram_file_id}`, JSON.stringify({
+                    url: urlData.url,
+                    timestamp: Date.now()
+                  }));
+                } catch(e) {}
+              }
+              return { ...img, local_url: urlData.url };
+            }
+          } catch(e) {}
+          return img;
+        }));
+        
+        setImages(imagesWithUrl);
+      }
+    } catch (e) {
+      console.error("Failed to load images", e);
+    }
+  };
+
   useEffect(() => {
     if (currentView === 'dashboard' && currentUserId) {
       getTextsFromLocalDB(currentUserId).then(loadedTexts => setTexts(loadedTexts));
+      fetchImages(currentUserId);
     }
   }, [currentView, currentUserId]);
 
@@ -476,7 +553,7 @@ export default function App() {
         </button>
       )}
 
-      {currentView === 'dashboard' && texts.length > 0 && (
+      {currentView === 'dashboard' && (texts.length > 0 || images.length > 0) && (
         <>
           <div className="absolute top-[73px] left-0 right-0 h-[63px] flex items-center justify-end px-6 gap-4 z-20 pointer-events-none">
             {selectedTexts.size > 0 && (
@@ -502,8 +579,14 @@ export default function App() {
                 </button>
               </>
             )}
-            <div className="flex items-center gap-2 pointer-events-auto">
+            <div className="flex items-center gap-4 pointer-events-auto">
               <span className="text-gray-500 text-sm font-medium px-2" title="عدد الإضافات اليوم">{texts.filter(t => Date.now() - t.timestamp < 24 * 60 * 60 * 1000).length}</span>
+              <button 
+                onClick={() => { setShowImageUploadPopup(true); setImageTitle(''); setSelectedImageFile(null); }}
+                className="p-2 -mr-2 flex items-center justify-center transition-all outline-none cursor-pointer text-gray-400 hover:text-white hover:scale-110 active:scale-95"
+              >
+                <ImagePlus size={26} strokeWidth={1.5} />
+              </button>
               <button 
                 onClick={() => { setShowAddTextPopup(true); setNewText(''); }}
                 className="p-2 -mr-2 flex items-center justify-center transition-all outline-none cursor-pointer text-gray-400 hover:text-white hover:scale-110 active:scale-95"
@@ -722,110 +805,162 @@ export default function App() {
         </div>
       )}
 
-      {currentView === 'dashboard' && texts.length === 0 && (
-        <button 
-          onClick={() => { setShowAddTextPopup(true); setNewText(''); }}
-          className="flex flex-col items-center justify-center gap-4 transition-all cursor-pointer group hover:scale-105 active:scale-95 outline-none bg-transparent border-none mt-12"
-        >
-          <Plus size={48} strokeWidth={1} className="text-gray-400 group-hover:text-white transition-colors" />
-          <span className="text-lg text-gray-400 group-hover:text-white transition-colors font-light tracking-wide">إضافة نص</span>
-        </button>
+      {currentView === 'dashboard' && texts.length === 0 && images.length === 0 && (
+        <div className="flex items-center gap-12 mt-12">
+          <button 
+            onClick={() => { setShowAddTextPopup(true); setNewText(''); }}
+            className="flex flex-col items-center justify-center gap-4 transition-all cursor-pointer group hover:scale-105 active:scale-95 outline-none bg-transparent border-none"
+          >
+            <Plus size={48} strokeWidth={1} className="text-gray-400 group-hover:text-white transition-colors" />
+            <span className="text-lg text-gray-400 group-hover:text-white transition-colors font-light tracking-wide">إضافة نص</span>
+          </button>
+          
+          <button 
+            onClick={() => { setShowImageUploadPopup(true); setImageTitle(''); setSelectedImageFile(null); }}
+            className="flex flex-col items-center justify-center gap-4 transition-all cursor-pointer group hover:scale-105 active:scale-95 outline-none bg-transparent border-none"
+          >
+            <ImagePlus size={48} strokeWidth={1} className="text-gray-400 group-hover:text-white transition-colors" />
+            <span className="text-lg text-gray-400 group-hover:text-white transition-colors font-light tracking-wide">إضافة صورة</span>
+          </button>
+        </div>
       )}
 
-      {currentView === 'dashboard' && texts.length > 0 && (
+      {currentView === 'dashboard' && (texts.length > 0 || images.length > 0) && (
         <div className="absolute inset-0 pt-[156px] px-6 flex flex-col items-start pointer-events-none pb-6 w-full h-full overflow-hidden" dir="ltr">
           {/* Texts list */}
           <div className="flex-1 w-full pointer-events-auto overflow-y-auto custom-scrollbar" dir="rtl">
             <div className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-4 pb-12 w-full items-start" dir="ltr">
-              {texts.map((item) => {
-                const words = item.text.split(/\s+/);
-                const isLong = item.text.length > 300 || words.length > 50;
-                const isExpanded = expandedTexts.has(item.id);
-                
-                let displayText = item.text;
-                if (isLong && !isExpanded) {
-                  if (item.text.length > 300) {
-                    displayText = item.text.substring(0, 300) + '...';
-                  } else {
-                    displayText = words.slice(0, 50).join(' ') + '...';
-                  }
-                }
-
+              {[
+                ...texts.map(t => ({ ...t, type: 'text', time: t.timestamp })),
+                ...images.map(i => ({ ...i, type: 'image', time: i.created_at }))
+              ]
+              .sort((a, b) => b.time - a.time)
+              .map((item: any) => {
                 const isSelected = selectedTexts.has(item.id);
                 const borderClass = isSelected ? 'border-white shadow-[0_0_10px_rgba(255,255,255,0.2)]' : 'border-white/10';
 
-                return (
-                  <div 
-                    key={item.id} 
-                    onPointerDown={() => handlePointerDown(item.id)}
-                    onPointerUp={handlePointerUpOrCancel}
-                    onPointerLeave={handlePointerUpOrCancel}
-                    onPointerCancel={handlePointerUpOrCancel}
-                    onContextMenu={(e) => {
-                      if (selectedTexts.size > 0 || (pressTimerRef.current === null && selectedTexts.size === 0 && e.nativeEvent.pointerType === 'touch')) {
-                        // We loosely prevent default if touched to select, or if currently selecting
-                      }
-                      e.preventDefault(); // Prevent context menu fully to ensure long press feels native
-                    }}
-                    onClick={(e) => {
-                      if (wasLongPressedRef.current) {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        return;
-                      }
-                      if (selectedTexts.size > 0) {
-                        toggleSelection(item.id, e);
-                      }
-                    }}
-                    className={`bg-white/5 border ${borderClass} rounded-2xl p-5 text-white whitespace-pre-wrap text-[17px] leading-relaxed w-full break-words text-right relative transition-all ${selectedTexts.size > 0 ? 'cursor-pointer' : ''} select-none group`} 
-                    dir="rtl"
-                  >
-                    {!selectedTexts.size && (
-                      <button
-                        onClick={(e) => {
+                if (item.type === 'text') {
+                  const words = item.text.split(/\s+/);
+                  const isLong = item.text.length > 300 || words.length > 50;
+                  const isExpanded = expandedTexts.has(item.id);
+                  
+                  let displayText = item.text;
+                  if (isLong && !isExpanded) {
+                    if (item.text.length > 300) {
+                      displayText = item.text.substring(0, 300) + '...';
+                    } else {
+                      displayText = words.slice(0, 50).join(' ') + '...';
+                    }
+                  }
+
+                  return (
+                    <div 
+                      key={item.id} 
+                      onPointerDown={() => handlePointerDown(item.id)}
+                      onPointerUp={handlePointerUpOrCancel}
+                      onPointerLeave={handlePointerUpOrCancel}
+                      onPointerCancel={handlePointerUpOrCancel}
+                      onContextMenu={(e) => {
+                        if (selectedTexts.size > 0 || (pressTimerRef.current === null && selectedTexts.size === 0 && e.nativeEvent.pointerType === 'touch')) {
+                        }
+                        e.preventDefault(); 
+                      }}
+                      onClick={(e) => {
+                        if (wasLongPressedRef.current) {
                           e.stopPropagation();
                           e.preventDefault();
-                          const editHistoryKey = `editHistory_${currentUserId}`;
-                          const storedHistory = localStorage.getItem(editHistoryKey);
-                          const editTimestamps: number[] = storedHistory ? JSON.parse(storedHistory) : [];
-                          const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
-                          const recentEdits = editTimestamps.filter(ts => Date.now() - ts < THIRTY_DAYS_MS);
-                          
-                          if (recentEdits.length >= 100) {
-                            setShowEditLimitPopup(true);
-                            return;
-                          }
-                          
-                          setEditTextItem(item);
-                          setEditTextInput(item.text);
-                          setShowEditTextPopup(true);
-                        }}
-                        className="absolute bottom-4 left-4 p-2 md:opacity-0 md:group-hover:opacity-100 transition-opacity bg-black/40 hover:bg-black/80 rounded-full text-gray-400 hover:text-white"
-                        title="تعديل النص"
-                      >
-                        <Pencil size={18} strokeWidth={1.5} />
-                      </button>
-                    )}
-                    {displayText}
-                    {isLong && (
-                      <button 
-                        onClick={(e) => {
-                          if (selectedTexts.size > 0) return; // disable 'read more' when selecting
-                          e.stopPropagation();
-                          setExpandedTexts(prev => {
-                            const newSet = new Set(prev);
-                            if (newSet.has(item.id)) newSet.delete(item.id);
-                            else newSet.add(item.id);
-                            return newSet;
-                          });
-                        }}
-                        className="text-gray-400 hover:text-white mt-4 text-sm font-medium transition-colors cursor-pointer block bg-transparent border-none outline-none"
-                      >
-                        {isExpanded ? 'عرض أقل' : 'المزيد'}
-                      </button>
-                    )}
-                  </div>
-                );
+                          return;
+                        }
+                        if (selectedTexts.size > 0) {
+                          toggleSelection(item.id, e);
+                        }
+                      }}
+                      className={`bg-white/5 border ${borderClass} rounded-2xl p-5 text-white whitespace-pre-wrap text-[17px] leading-relaxed w-full break-words text-right relative transition-all ${selectedTexts.size > 0 ? 'cursor-pointer' : ''} select-none group`} 
+                      dir="rtl"
+                    >
+                      {!selectedTexts.size && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            const editHistoryKey = `editHistory_${currentUserId}`;
+                            const storedHistory = localStorage.getItem(editHistoryKey);
+                            const editTimestamps: number[] = storedHistory ? JSON.parse(storedHistory) : [];
+                            const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+                            const recentEdits = editTimestamps.filter(ts => Date.now() - ts < THIRTY_DAYS_MS);
+                            
+                            if (recentEdits.length >= 100) {
+                              setShowEditLimitPopup(true);
+                              return;
+                            }
+                            
+                            setEditTextItem(item);
+                            setEditTextInput(item.text);
+                            setShowEditTextPopup(true);
+                          }}
+                          className="absolute bottom-4 left-4 p-2 md:opacity-0 md:group-hover:opacity-100 transition-opacity bg-black/40 hover:bg-black/80 rounded-full text-gray-400 hover:text-white cursor-pointer z-10"
+                          title="تعديل النص"
+                        >
+                          <Pencil size={18} strokeWidth={1.5} />
+                        </button>
+                      )}
+                      {displayText}
+                      {isLong && (
+                        <button 
+                          onClick={(e) => {
+                            if (selectedTexts.size > 0) return; 
+                            e.stopPropagation();
+                            setExpandedTexts(prev => {
+                              const newSet = new Set(prev);
+                              if (newSet.has(item.id)) newSet.delete(item.id);
+                              else newSet.add(item.id);
+                              return newSet;
+                            });
+                          }}
+                          className="text-gray-400 hover:text-white mt-4 text-sm font-medium transition-colors cursor-pointer block bg-transparent border-none outline-none"
+                        >
+                          {isExpanded ? 'عرض أقل' : 'المزيد'}
+                        </button>
+                      )}
+                    </div>
+                  );
+                } else if (item.type === 'image') {
+                  const localUrl = item.local_url;
+                  return (
+                    <div 
+                      key={item.id} 
+                      className={`bg-white/5 border ${borderClass} rounded-2xl overflow-hidden relative transition-all ${selectedTexts.size > 0 ? 'cursor-pointer' : ''} select-none group min-h-[150px] flex flex-col`}
+                      onPointerDown={() => handlePointerDown(item.id)}
+                      onPointerUp={handlePointerUpOrCancel}
+                      onPointerLeave={handlePointerUpOrCancel}
+                      onPointerCancel={handlePointerUpOrCancel}
+                      onContextMenu={(e) => {
+                        if (selectedTexts.size > 0 || (pressTimerRef.current === null && selectedTexts.size === 0 && e.nativeEvent.pointerType === 'touch')) {
+                        }
+                        e.preventDefault(); 
+                      }}
+                      onClick={(e) => {
+                        if (wasLongPressedRef.current) {
+                          e.stopPropagation(); e.preventDefault(); return;
+                        }
+                        if (selectedTexts.size > 0) { toggleSelection(item.id, e); }
+                      }}
+                    >
+                      <div className="w-full relative pt-[100%] bg-black/20">
+                        {localUrl ? (
+                          <img src={localUrl} alt={item.image_title} className="absolute inset-0 w-full h-full object-contain pointer-events-none" />
+                        ) : (
+                          <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-500 gap-2">
+			                <ImageIcon size={32} className="opacity-50" />
+                          	<span className="text-sm">جاري التحميل...</span>
+                          </div>
+                        )}
+                      </div>
+                      <div className="p-4 text-center bg-black/20 text-white text-sm font-medium truncate" dir="rtl">{item.image_title}</div>
+                    </div>
+                  );
+                }
+                return null;
               })}
             </div>
           </div>
@@ -1069,6 +1204,108 @@ export default function App() {
               >
                 تسجيل الخروج
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showImageUploadPopup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4" onClick={() => !isUploading && setShowImageUploadPopup(false)}>
+          <div 
+             className="bg-[#111] border border-white/10 p-6 rounded-3xl flex flex-col gap-4 w-full max-w-xl shadow-[0_0_40px_rgba(0,0,0,0.8)] relative"
+             onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex justify-between items-center w-full pb-1" dir="rtl">
+              <div className="text-xl text-gray-300 font-medium">إضافة صورة</div>
+              <button 
+                onClick={() => setShowImageUploadPopup(false)}
+                disabled={isUploading}
+                className="text-gray-500 hover:text-white transition-colors cursor-pointer text-base bg-transparent border-none outline-none disabled:opacity-50"
+              >
+                إلغاء
+              </button>
+            </div>
+            
+            <div className="flex flex-col gap-4 mt-2" dir="rtl">
+              <input 
+                type="text" 
+                value={imageTitle}
+                onChange={(e) => setImageTitle(e.target.value)}
+                placeholder="عنوان الصورة"
+                disabled={isUploading}
+                className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-white placeholder:text-gray-600 focus:outline-none focus:border-white/30 transition-colors text-lg"
+              />
+              
+              <div 
+                className={`w-full h-32 border-2 border-dashed ${selectedImageFile ? 'border-white/30 bg-white/10' : 'border-white/10 bg-white/5 hover:border-white/20'} rounded-2xl flex flex-col items-center justify-center cursor-pointer transition-colors relative`}
+                onClick={() => !isUploading && fileInputRef.current?.click()}
+              >
+                {selectedImageFile ? (
+                  <div className="text-white text-center px-4">
+                    <span className="font-medium text-lg block truncate">{selectedImageFile.name}</span>
+                    <span className="text-sm text-gray-400 mt-1 block">{(selectedImageFile.size / 1024 / 1024).toFixed(2)} MB</span>
+                  </div>
+                ) : (
+                  <>
+                    <ImagePlus size={32} className="text-gray-400 mb-2" />
+                    <span className="text-gray-400 font-medium">اختر صورة</span>
+                  </>
+                )}
+                <input 
+                  type="file" 
+                  ref={fileInputRef}
+                  accept="image/*"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) setSelectedImageFile(file);
+                  }}
+                  className="hidden"
+                  disabled={isUploading}
+                />
+              </div>
+
+              {uploadError && <div className="text-red-500 text-sm font-medium">{uploadError}</div>}
+
+              <div className="flex justify-end w-full mt-2">
+                <button 
+                  onClick={async () => {
+                    if (!imageTitle.trim() || !selectedImageFile || !currentUserId) return;
+                    setIsUploading(true);
+                    setUploadError('');
+                    
+                    try {
+                      const formData = new FormData();
+                      formData.append('user_id', currentUserId);
+                      formData.append('image_title', imageTitle.trim());
+                      formData.append('image', selectedImageFile);
+
+                      const res = await fetch('/api/upload-image', {
+                        method: 'POST',
+                        body: formData,
+                      });
+
+                      const data = await res.json();
+                      if (!res.ok) {
+                        throw new Error(data.error || 'فشل الرفع');
+                      }
+
+                      // Successfully uploaded, refresh images
+                      await fetchImages(currentUserId);
+                      setShowImageUploadPopup(false);
+                      setImageTitle('');
+                      setSelectedImageFile(null);
+                    } catch (error: any) {
+                      setUploadError(error.message);
+                    } finally {
+                      setIsUploading(false);
+                    }
+                  }} 
+                  disabled={isUploading || !imageTitle.trim() || !selectedImageFile}
+                  className={`w-32 py-2 rounded-full font-medium transition-all text-lg flex items-center justify-center gap-2 ${imageTitle.trim() && selectedImageFile && !isUploading ? 'bg-white text-black hover:bg-gray-200 cursor-pointer hover:scale-105 active:scale-95 shadow-[0_0_15px_rgba(255,255,255,0.2)]' : 'bg-white/20 text-gray-500 cursor-not-allowed'}`}
+                >
+                  {isUploading ? 'جاري الرفع...' : 'رفع'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
