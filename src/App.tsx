@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Eye, EyeOff, Plus, User, Trash2, Pencil, Copy, Check, X } from 'lucide-react';
+import { Eye, EyeOff, Plus, User, Trash2, Pencil, Copy, Check, X, Star } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { db } from './db';
 
@@ -12,6 +12,7 @@ interface TextItem {
   userId: string;
   text: string;
   timestamp: number;
+  starred?: boolean;
 }
 
 const initLocalDB = (): Promise<IDBDatabase> => {
@@ -48,8 +49,8 @@ const saveTextToDB = async (textItem: TextItem) => {
 
   try {
     await db.execute({
-      sql: `INSERT INTO texts (id, userId, text, timestamp) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET text=excluded.text, timestamp=excluded.timestamp`,
-      args: [textItem.id, textItem.userId, textItem.text, textItem.timestamp]
+      sql: `INSERT INTO texts (id, userId, text, timestamp, starred) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET text=excluded.text, timestamp=excluded.timestamp, starred=excluded.starred`,
+      args: [textItem.id, textItem.userId, textItem.text, textItem.timestamp, textItem.starred ? 1 : 0]
     });
   } catch (e) {
     console.error("Turso save error", e);
@@ -86,7 +87,8 @@ const syncTextsFromRemoteDB = async (userId: string) => {
         id: row.id as string,
         userId: row.userId as string,
         text: row.text as string,
-        timestamp: row.timestamp as number
+        timestamp: row.timestamp as number,
+        starred: Boolean(row.starred)
       }));
       
       try {
@@ -317,7 +319,7 @@ export default function App() {
   const [editTextInput, setEditTextInput] = useState('');
   
   const [texts, setTexts] = useState<TextItem[]>([]);
-  const [expandedTexts, setExpandedTexts] = useState<Set<string>>(new Set());
+  const [expandedLengths, setExpandedLengths] = useState<Record<string, number>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const handleCopyId = (id: string, e?: React.MouseEvent | React.TouchEvent) => {
@@ -737,18 +739,19 @@ export default function App() {
           {/* Texts list */}
           <div className="flex-1 w-full pointer-events-auto overflow-y-auto custom-scrollbar" dir="rtl">
             <div className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-4 pb-12 w-full items-start" dir="ltr">
-              {texts.map((item) => {
+              {texts.slice().sort((a, b) => {
+                if (a.starred && !b.starred) return -1;
+                if (!a.starred && b.starred) return 1;
+                return b.timestamp - a.timestamp;
+              }).map((item) => {
                 const words = item.text.split(/\s+/);
-                const isLong = item.text.length > 300 || words.length > 50;
-                const isExpanded = expandedTexts.has(item.id);
+                const currentLimit = expandedLengths[item.id] || 50;
+                const isLong = words.length > 50;
+                const hasMore = words.length > currentLimit;
                 
                 let displayText = item.text;
-                if (isLong && !isExpanded) {
-                  if (item.text.length > 300) {
-                    displayText = item.text.substring(0, 300) + '...';
-                  } else {
-                    displayText = words.slice(0, 50).join(' ') + '...';
-                  }
+                if (hasMore) {
+                  displayText = words.slice(0, currentLimit).join(' ') + '...';
                 }
 
                 const isSelected = selectedTexts.has(item.id);
@@ -777,52 +780,130 @@ export default function App() {
                         toggleSelection(item.id, e);
                       }
                     }}
-                    className={`bg-white/5 border ${borderClass} rounded-2xl p-5 text-white whitespace-pre-wrap text-[17px] leading-relaxed w-full break-words text-right relative transition-all ${selectedTexts.size > 0 ? 'cursor-pointer' : ''} select-none group`} 
+                    className={`bg-white/5 border ${borderClass} rounded-2xl p-5 pb-10 text-white whitespace-pre-wrap text-[17px] leading-relaxed w-full break-words text-right relative transition-all ${selectedTexts.size > 0 ? 'cursor-pointer' : ''} select-none group`} 
                     dir="rtl"
                   >
                     {!selectedTexts.size && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          e.preventDefault();
-                          const editHistoryKey = `editHistory_${currentUserId}`;
-                          const storedHistory = localStorage.getItem(editHistoryKey);
-                          const editTimestamps: number[] = storedHistory ? JSON.parse(storedHistory) : [];
-                          const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
-                          const recentEdits = editTimestamps.filter(ts => Date.now() - ts < THIRTY_DAYS_MS);
-                          
-                          if (recentEdits.length >= 100) {
-                            setShowEditLimitPopup(true);
-                            return;
-                          }
-                          
-                          setEditTextItem(item);
-                          setEditTextInput(item.text);
-                          setShowEditTextPopup(true);
-                        }}
-                        className="absolute bottom-4 left-4 p-2 md:opacity-0 md:group-hover:opacity-100 transition-opacity bg-black/40 hover:bg-black/80 rounded-full text-gray-400 hover:text-white"
-                        title="تعديل النص"
-                      >
-                        <Pencil size={18} strokeWidth={1.5} />
-                      </button>
+                      <div className="absolute bottom-3 left-3 flex flex-row items-center gap-1 z-10" dir="ltr">
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            const updatedItem = { ...item, starred: !item.starred };
+                            await saveTextToDB(updatedItem);
+                            setTexts(prev => prev.map(t => t.id === item.id ? updatedItem : t));
+                          }}
+                          className={`p-1.5 transition-all rounded-full cursor-pointer outline-none bg-transparent border-none ${item.starred ? 'opacity-100 text-yellow-500 hover:text-yellow-400' : 'opacity-0 group-hover:opacity-100 text-gray-500 hover:text-white hover:bg-white/10'}`}
+                          title={item.starred ? "إزالة التمييز" : "تثبيت كمفضلة"}
+                        >
+                          <Star size={22} strokeWidth={item.starred ? 2 : 1.5} className={item.starred ? "fill-yellow-500" : ""} />
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            const editHistoryKey = `editHistory_${currentUserId}`;
+                            const storedHistory = localStorage.getItem(editHistoryKey);
+                            const editTimestamps: number[] = storedHistory ? JSON.parse(storedHistory) : [];
+                            const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+                            const recentEdits = editTimestamps.filter(ts => Date.now() - ts < THIRTY_DAYS_MS);
+                            
+                            if (recentEdits.length >= 100) {
+                              setShowEditLimitPopup(true);
+                              return;
+                            }
+                            
+                            setEditTextItem(item);
+                            setEditTextInput(item.text);
+                            setShowEditTextPopup(true);
+                          }}
+                          className="p-1.5 md:opacity-0 md:group-hover:opacity-100 transition-opacity bg-black/40 hover:bg-black/80 rounded-full text-gray-400 hover:text-white"
+                          title="تعديل النص"
+                        >
+                          <Pencil size={18} strokeWidth={1.5} />
+                        </button>
+                      </div>
                     )}
                     {displayText}
                     {isLong && (
-                      <button 
-                        onClick={(e) => {
-                          if (selectedTexts.size > 0) return; // disable 'read more' when selecting
-                          e.stopPropagation();
-                          setExpandedTexts(prev => {
-                            const newSet = new Set(prev);
-                            if (newSet.has(item.id)) newSet.delete(item.id);
-                            else newSet.add(item.id);
-                            return newSet;
-                          });
-                        }}
-                        className="text-gray-400 hover:text-white mt-4 text-sm font-medium transition-colors cursor-pointer block bg-transparent border-none outline-none"
-                      >
-                        {isExpanded ? 'عرض أقل' : 'المزيد'}
-                      </button>
+                      <div className="flex flex-col gap-2 mt-4 items-start w-full">
+                        <div className="flex flex-row flex-wrap gap-4 items-center">
+                          {hasMore && (
+                            <button 
+                              onClick={(e) => {
+                                if (selectedTexts.size > 0) return;
+                                e.stopPropagation();
+                                e.preventDefault();
+                                const scrollContainer = e.currentTarget.closest('.custom-scrollbar');
+                                const prevScrollTop = scrollContainer?.scrollTop;
+                                setExpandedLengths(prev => ({ ...prev, [item.id]: currentLimit + 50 }));
+                                if (scrollContainer && prevScrollTop !== undefined) {
+                                  requestAnimationFrame(() => { scrollContainer.scrollTop = prevScrollTop; });
+                                }
+                              }}
+                              className="text-gray-400 hover:text-white text-sm font-medium transition-colors cursor-pointer bg-transparent border-none outline-none"
+                            >
+                              المزيد
+                            </button>
+                          )}
+                          {currentLimit > 50 && (
+                            <button 
+                              onClick={(e) => {
+                                if (selectedTexts.size > 0) return;
+                                e.stopPropagation();
+                                e.preventDefault();
+                                const scrollContainer = e.currentTarget.closest('.custom-scrollbar');
+                                const prevScrollTop = scrollContainer?.scrollTop;
+                                setExpandedLengths(prev => ({ ...prev, [item.id]: Math.max(50, currentLimit - 50) }));
+                                if (scrollContainer && prevScrollTop !== undefined) {
+                                  requestAnimationFrame(() => { scrollContainer.scrollTop = prevScrollTop; });
+                                }
+                              }}
+                              className="text-gray-400 hover:text-white text-sm font-medium transition-colors cursor-pointer bg-transparent border-none outline-none"
+                            >
+                              عرض أقل
+                            </button>
+                          )}
+                        </div>
+                        {currentLimit >= 200 && (
+                          <div className="flex flex-row flex-wrap gap-4 items-center">
+                            {hasMore && (
+                              <button
+                                onClick={(e) => {
+                                  if (selectedTexts.size > 0) return;
+                                  e.stopPropagation();
+                                  e.preventDefault();
+                                  const scrollContainer = e.currentTarget.closest('.custom-scrollbar');
+                                  const prevScrollTop = scrollContainer?.scrollTop;
+                                  setExpandedLengths(prev => ({ ...prev, [item.id]: words.length }));
+                                  if (scrollContainer && prevScrollTop !== undefined) {
+                                    requestAnimationFrame(() => { scrollContainer.scrollTop = prevScrollTop; });
+                                  }
+                                }}
+                                className="text-gray-400 hover:text-white text-sm font-medium transition-colors cursor-pointer bg-transparent border-none outline-none"
+                              >
+                                عرض الكل
+                              </button>
+                            )}
+                            <button
+                              onClick={(e) => {
+                                if (selectedTexts.size > 0) return;
+                                e.stopPropagation();
+                                e.preventDefault();
+                                const scrollContainer = e.currentTarget.closest('.custom-scrollbar');
+                                const prevScrollTop = scrollContainer?.scrollTop;
+                                setExpandedLengths(prev => ({ ...prev, [item.id]: 50 }));
+                                if (scrollContainer && prevScrollTop !== undefined) {
+                                  requestAnimationFrame(() => { scrollContainer.scrollTop = prevScrollTop; });
+                                }
+                              }}
+                              className="text-gray-400 hover:text-white text-sm font-medium transition-colors cursor-pointer bg-transparent border-none outline-none"
+                            >
+                              عرض أقل شيء
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     )}
                   </div>
                 );
