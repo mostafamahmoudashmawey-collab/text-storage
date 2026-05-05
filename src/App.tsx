@@ -335,21 +335,6 @@ export default function App() {
   const [isRecording, setIsRecording] = useState(false);
   const recognitionRef = useRef<any>(null);
 
-  const [showMicPermissionPopup, setShowMicPermissionPopup] = useState(false);
-  const [pendingMicAction, setPendingMicAction] = useState<(() => void) | null>(null);
-  const [micPermissionGranted, setMicPermissionGranted] = useState(() => {
-    return localStorage.getItem('micPermissionGranted') === 'true';
-  });
-
-  const handleMicClick = (setter: React.Dispatch<React.SetStateAction<string>>, currentValue: string) => {
-    if (!micPermissionGranted) {
-      setPendingMicAction(() => () => toggleRecording(setter, currentValue));
-      setShowMicPermissionPopup(true);
-    } else {
-      toggleRecording(setter, currentValue);
-    }
-  };
-
   const isRecordingRef = useRef(false);
   const recordingTextRef = useRef('');
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1369,7 +1354,7 @@ export default function App() {
                 <button
                   type="button"
                   className={`p-2 rounded-full transition-all duration-300 flex items-center justify-center ${isRecording ? 'bg-red-500/30 text-red-500 animate-pulse shadow-[0_0_20px_rgba(239,68,68,0.6)] scale-110' : 'bg-white/5 text-gray-400 hover:text-white hover:bg-white/10'}`}
-                  onClick={() => handleMicClick(setNewText, newText)}
+                  onClick={() => toggleRecording(setNewText, newText)}
                   title="تحدث"
                 >
                   <Mic size={20} />
@@ -1446,54 +1431,6 @@ export default function App() {
                 className="flex-1 bg-red-500 hover:bg-red-600 text-white font-medium py-3 rounded-full transition-all shadow-[0_0_15px_rgba(239,68,68,0.3)] active:scale-95 text-lg"
               >
                 حذف
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showMicPermissionPopup && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4" onClick={() => {
-          setShowMicPermissionPopup(false);
-          setPendingMicAction(null);
-        }}>
-          <div 
-             className="bg-[#111] border border-white/10 p-8 rounded-3xl flex flex-col items-center gap-6 w-full max-w-sm shadow-[0_0_40px_rgba(0,0,0,0.8)] text-center animate-in zoom-in-95 duration-200"
-             onClick={(e) => e.stopPropagation()}
-             dir="rtl"
-          >
-            <div className="w-16 h-16 bg-blue-500/10 text-blue-500 rounded-full flex items-center justify-center mb-2">
-              <Mic size={32} />
-            </div>
-            <div className="text-xl text-gray-200 font-medium">
-              صلاحية الميكروفون
-            </div>
-            <div className="text-gray-400 text-[15px] leading-relaxed">
-              يرجى الموافقة على استخدام الميكروفون لتحويل الصوت إلى نص، ليتم تفعيله بنجاح.
-            </div>
-            <div className="flex gap-4 w-full mt-2">
-              <button 
-                onClick={() => {
-                  setShowMicPermissionPopup(false);
-                  setPendingMicAction(null);
-                }}
-                className="flex-1 bg-white/5 hover:bg-white/10 text-white font-medium py-3 rounded-full transition-all active:scale-95 text-lg"
-              >
-                إلغاء
-              </button>
-              <button 
-                onClick={() => {
-                  localStorage.setItem('micPermissionGranted', 'true');
-                  setMicPermissionGranted(true);
-                  setShowMicPermissionPopup(false);
-                  if (pendingMicAction) {
-                    pendingMicAction();
-                    setPendingMicAction(null);
-                  }
-                }}
-                className="flex-1 bg-blue-500 hover:bg-blue-600 text-white font-medium py-3 rounded-full transition-all shadow-[0_0_15px_rgba(59,130,246,0.3)] active:scale-95 text-lg"
-              >
-                موافقة
               </button>
             </div>
           </div>
@@ -1652,7 +1589,7 @@ export default function App() {
                 <button
                   type="button"
                   className={`p-2 rounded-full transition-all duration-300 flex items-center justify-center ${isRecording ? 'bg-red-500/30 text-red-500 animate-pulse shadow-[0_0_20px_rgba(239,68,68,0.6)] scale-110' : 'bg-white/5 text-gray-400 hover:text-white hover:bg-white/10'}`}
-                  onClick={() => handleMicClick(setEditTextInput, editTextInput)}
+                  onClick={() => toggleRecording(setEditTextInput, editTextInput)}
                   title="تحدث"
                 >
                   <Mic size={20} />
