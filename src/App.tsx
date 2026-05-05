@@ -895,7 +895,7 @@ export default function App() {
         <div className="absolute inset-0 pt-[156px] px-6 flex flex-col items-start pointer-events-none pb-6 w-full h-full overflow-hidden" dir="ltr">
           {/* Texts list */}
           <div className="flex-1 w-full pointer-events-auto overflow-y-auto custom-scrollbar" dir="rtl">
-            {useMemo(() => (
+            <>
               <div className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-4 pb-12 w-full items-start" dir="ltr">
                 {sortedTexts.map((item) => {
                   // Optimize parsing: don't use split unless actually very long 
@@ -1077,7 +1077,7 @@ export default function App() {
                 );
               })}
             </div>
-            ), [sortedTexts, expandedLengths, selectedTexts])}
+            </>
           </div>
         </div>
       )}
