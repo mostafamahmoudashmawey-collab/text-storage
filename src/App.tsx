@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Eye, EyeOff, Plus, User, Trash2, Pencil, Copy, Check, X, Star } from 'lucide-react';
-import { useState, useEffect, useRef } from 'react';
+import { Eye, EyeOff, Plus, User, Trash2, Pencil, Copy, Check, X, Star, Share2, Mic, MicPulse } from 'lucide-react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { db } from './db';
 
 interface TextItem {
@@ -319,8 +319,165 @@ export default function App() {
   const [editTextInput, setEditTextInput] = useState('');
   
   const [texts, setTexts] = useState<TextItem[]>([]);
+  const sortedTexts = useMemo(() => {
+    return texts.slice().sort((a, b) => {
+      if (a.starred && !b.starred) return -1;
+      if (!a.starred && b.starred) return 1;
+      return b.timestamp - a.timestamp;
+    });
+  }, [texts]);
+  const recentAdditionsCount = useMemo(() => {
+    return texts.filter(t => Date.now() - t.timestamp < 24 * 60 * 60 * 1000).length;
+  }, [texts]);
   const [expandedLengths, setExpandedLengths] = useState<Record<string, number>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [shareModalText, setShareModalText] = useState<string | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const recognitionRef = useRef<any>(null);
+
+  const isRecordingRef = useRef(false);
+  const recordingTextRef = useRef('');
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const stopRecordingUserAction = () => {
+    isRecordingRef.current = false;
+    setIsRecording(false);
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch(e) {}
+    }
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+  };
+
+  const toggleRecording = (setter: React.Dispatch<React.SetStateAction<string>>, currentValue: string) => {
+    // @ts-ignore
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert('عذراً، متصفحك لا يدعم تحويل الصوت إلى نص.');
+      return;
+    }
+
+    if (isRecording) {
+      stopRecordingUserAction();
+      return;
+    }
+
+    recordingTextRef.current = currentValue;
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'ar-SA';
+    recognition.continuous = true;
+    recognition.interimResults = true; // Enable interim for word-by-word
+    recognition.maxAlternatives = 1;
+
+    const resetSilenceTimer = () => {
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = setTimeout(() => {
+        stopRecordingUserAction();
+      }, 5000);
+    };
+
+    recognition.onstart = () => {
+      setIsRecording(true);
+      isRecordingRef.current = true;
+      resetSilenceTimer();
+    };
+
+    recognition.onresult = (event: any) => {
+      resetSilenceTimer();
+      let interimData = '';
+
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        if (event.results[i].isFinal) {
+          const finalStr = event.results[i][0].transcript.trim();
+          if (finalStr) {
+            recordingTextRef.current += (recordingTextRef.current && !recordingTextRef.current.endsWith(' ') && !recordingTextRef.current.endsWith('\n') ? ' ' : '') + finalStr + ' ';
+          }
+        } else {
+          interimData += event.results[i][0].transcript;
+        }
+      }
+
+      const currentFinalText = recordingTextRef.current;
+      if (interimData) {
+         let base = currentFinalText;
+         if (base && !base.endsWith(' ') && !base.endsWith('\n') && !interimData.startsWith(' ')) {
+           base += ' ';
+         }
+         setter(base + interimData);
+      } else {
+         setter(currentFinalText);
+      }
+    };
+
+    recognition.onerror = (event: any) => {
+      console.error('Speech recognition error', event.error);
+      if (event.error !== 'no-speech' && event.error !== 'aborted') {
+        stopRecordingUserAction();
+      }
+    };
+
+    recognition.onend = () => {
+      // إعادة تشغيل المايكروفون تلقائياً إذا لم يوقفه المستخدم يدوياً للحفاظ على الجودة وعدم القص
+      if (isRecordingRef.current && recognitionRef.current) {
+         try {
+           recognitionRef.current.start();
+           resetSilenceTimer();
+         } catch(e) {
+           stopRecordingUserAction();
+         }
+      } else {
+        stopRecordingUserAction();
+      }
+    };
+
+    recognitionRef.current = recognition;
+    try {
+      recognition.start();
+    } catch(e) {
+      console.error(e);
+      stopRecordingUserAction();
+    }
+  };
+
+  const sharePlatforms = [
+    { name: 'Email', domain: 'mail.google.com' },
+    { name: 'Facebook', domain: 'facebook.com' },
+    { name: 'YouTube', domain: 'youtube.com' },
+    { name: 'WhatsApp', domain: 'web.whatsapp.com' },
+    { name: 'Instagram', domain: 'instagram.com' },
+    { name: 'TikTok', domain: 'tiktok.com' },
+    { name: 'WeChat', domain: 'wechat.com' },
+    { name: 'Messenger', domain: 'messenger.com' },
+    { name: 'Telegram', domain: 'web.telegram.org' },
+    { name: 'LinkedIn', domain: 'linkedin.com' },
+    { name: 'Snapchat', domain: 'snapchat.com' },
+    { name: 'Reddit', domain: 'reddit.com' },
+    { name: 'Douyin', domain: 'douyin.com' },
+    { name: 'Kuaishou', domain: 'kuaishou.com' },
+    { name: 'Weibo', domain: 'weibo.com' },
+    { name: 'Pinterest', domain: 'pinterest.com' },
+    { name: 'QQ', domain: 'qq.com' },
+    { name: 'X', domain: 'x.com' },
+    { name: 'Qzone', domain: 'qzone.qq.com' },
+    { name: 'Quora', domain: 'quora.com' },
+    { name: 'Threads', domain: 'threads.net' },
+    { name: 'Xiaohongshu', domain: 'xiaohongshu.com' },
+    { name: 'JOSH', domain: 'myjosh.in' },
+    { name: 'Teams', domain: 'teams.microsoft.com' },
+    { name: 'Tieba', domain: 'tieba.baidu.com' },
+    { name: 'Viber', domain: 'viber.com' },
+    { name: 'imo', domain: 'imo.im' },
+    { name: 'Discord', domain: 'discord.com' },
+    { name: 'Twitch', domain: 'twitch.tv' },
+    { name: 'Line', domain: 'line.me' },
+    { name: 'Likee', domain: 'likee.video' },
+    { name: 'Picsart', domain: 'picsart.com' },
+    { name: 'Vevo', domain: 'vevo.com' },
+    { name: 'Tumblr', domain: 'tumblr.com' },
+  ];
 
   const handleCopyId = (id: string, e?: React.MouseEvent | React.TouchEvent) => {
     if (e) {
@@ -505,7 +662,7 @@ export default function App() {
               </>
             )}
             <div className="flex items-center gap-2 pointer-events-auto">
-              <span className="text-gray-500 text-sm font-medium px-2" title="عدد الإضافات اليوم">{texts.filter(t => Date.now() - t.timestamp < 24 * 60 * 60 * 1000).length}</span>
+              <span className="text-gray-500 text-sm font-medium px-2" title="عدد الإضافات اليوم">{recentAdditionsCount}</span>
               <button 
                 onClick={() => { setShowAddTextPopup(true); setNewText(''); }}
                 className="p-2 -mr-2 flex items-center justify-center transition-all outline-none cursor-pointer text-gray-400 hover:text-white hover:scale-110 active:scale-95"
@@ -738,20 +895,19 @@ export default function App() {
         <div className="absolute inset-0 pt-[156px] px-6 flex flex-col items-start pointer-events-none pb-6 w-full h-full overflow-hidden" dir="ltr">
           {/* Texts list */}
           <div className="flex-1 w-full pointer-events-auto overflow-y-auto custom-scrollbar" dir="rtl">
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-4 pb-12 w-full items-start" dir="ltr">
-              {texts.slice().sort((a, b) => {
-                if (a.starred && !b.starred) return -1;
-                if (!a.starred && b.starred) return 1;
-                return b.timestamp - a.timestamp;
-              }).map((item) => {
-                const words = item.text.split(/\s+/);
+            {useMemo(() => (
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-4 pb-12 w-full items-start" dir="ltr">
+                {sortedTexts.map((item) => {
+                  // Optimize parsing: don't use split unless actually very long 
                 const currentLimit = expandedLengths[item.id] || 50;
-                const isLong = words.length > 50;
-                const hasMore = words.length > currentLimit;
+                const charLimit = currentLimit * 6; // roughly 6 chars per word
+                const isLong = item.text.length > 300;
+                const hasMore = item.text.length > charLimit;
+                const maxWords = Math.ceil(item.text.length / 6);
                 
                 let displayText = item.text;
                 if (hasMore) {
-                  displayText = words.slice(0, currentLimit).join(' ') + '...';
+                  displayText = item.text.slice(0, charLimit) + '...';
                 }
 
                 const isSelected = selectedTexts.has(item.id);
@@ -822,6 +978,18 @@ export default function App() {
                         >
                           <Pencil size={18} strokeWidth={1.5} />
                         </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            navigator.clipboard.writeText(item.text);
+                            setShareModalText(item.text);
+                          }}
+                          className="p-1.5 md:opacity-0 md:group-hover:opacity-100 transition-opacity bg-black/40 hover:bg-black/80 rounded-full text-gray-400 hover:text-white"
+                          title="مشاركة"
+                        >
+                          <Share2 size={18} strokeWidth={1.5} />
+                        </button>
                       </div>
                     )}
                     {displayText}
@@ -875,7 +1043,7 @@ export default function App() {
                                   e.preventDefault();
                                   const scrollContainer = e.currentTarget.closest('.custom-scrollbar');
                                   const prevScrollTop = scrollContainer?.scrollTop;
-                                  setExpandedLengths(prev => ({ ...prev, [item.id]: words.length }));
+                                  setExpandedLengths(prev => ({ ...prev, [item.id]: maxWords }));
                                   if (scrollContainer && prevScrollTop !== undefined) {
                                     requestAnimationFrame(() => { scrollContainer.scrollTop = prevScrollTop; });
                                   }
@@ -909,6 +1077,7 @@ export default function App() {
                 );
               })}
             </div>
+            ), [sortedTexts, expandedLengths, selectedTexts])}
           </div>
         </div>
       )}
@@ -1156,7 +1325,7 @@ export default function App() {
       )}
 
       {showAddTextPopup && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4" onClick={() => setShowAddTextPopup(false)}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4" onClick={() => { setShowAddTextPopup(false); stopRecordingUserAction(); }}>
           <div 
              className="bg-[#111] border border-white/10 p-6 rounded-3xl flex flex-col gap-4 w-full max-w-xl shadow-[0_0_40px_rgba(0,0,0,0.8)] relative"
              onClick={(e) => e.stopPropagation()}
@@ -1164,19 +1333,34 @@ export default function App() {
             <div className="flex justify-between items-center w-full pb-1" dir="rtl">
               <div className="text-xl text-gray-300 font-medium">إضافة نص جديد</div>
               <button 
-                onClick={() => setShowAddTextPopup(false)}
+                onClick={() => { setShowAddTextPopup(false); stopRecordingUserAction(); }}
                 className="text-gray-500 hover:text-white transition-colors cursor-pointer text-base bg-transparent border-none outline-none"
               >
                 إلغاء
               </button>
             </div>
-            <textarea
-              value={newText}
-              onChange={(e) => setNewText(e.target.value)}
-              placeholder="اكتب نصك"
-              className="w-full h-48 bg-white/5 border border-white/10 rounded-2xl p-4 text-white placeholder:text-gray-600 focus:outline-none focus:border-white/30 transition-colors resize-none text-lg leading-relaxed custom-scrollbar"
-              dir="rtl"
-            />
+            <div className="w-full h-48 bg-white/5 border border-white/10 rounded-2xl flex flex-row focus-within:border-white/30 transition-colors" dir="rtl">
+              <textarea
+                value={newText}
+                onChange={(e) => {
+                  setNewText(e.target.value);
+                  recordingTextRef.current = e.target.value;
+                }}
+                placeholder="اكتب نصك"
+                className="flex-1 bg-transparent p-4 text-white placeholder:text-gray-600 focus:outline-none resize-none text-lg leading-relaxed custom-scrollbar h-full"
+                dir="rtl"
+              />
+              <div className="w-14 border-r border-white/10 flex items-end justify-center pb-3 flex-shrink-0">
+                <button
+                  type="button"
+                  className={`p-2 rounded-full transition-all duration-300 flex items-center justify-center ${isRecording ? 'bg-red-500/30 text-red-500 animate-pulse shadow-[0_0_20px_rgba(239,68,68,0.6)] scale-110' : 'bg-white/5 text-gray-400 hover:text-white hover:bg-white/10'}`}
+                  onClick={() => toggleRecording(setNewText, newText)}
+                  title="تحدث"
+                >
+                  <Mic size={20} />
+                </button>
+              </div>
+            </div>
             <div className="flex justify-end w-full mt-2">
               <button 
                 onClick={async () => {
@@ -1210,6 +1394,7 @@ export default function App() {
                   await saveTextToDB(newItem);
                   setTexts((prev) => [newItem, ...prev]);
                   setShowAddTextPopup(false);
+                  stopRecordingUserAction();
                   setNewText('');
                 }} 
                 disabled={!newText.trim()}
@@ -1367,6 +1552,7 @@ export default function App() {
       {showEditTextPopup && editTextItem && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4" onClick={() => {
             setShowEditTextPopup(false);
+            stopRecordingUserAction();
             setEditTextItem(null);
             setEditTextInput('');
           }}>
@@ -1379,6 +1565,7 @@ export default function App() {
               <button 
                 onClick={() => {
                   setShowEditTextPopup(false);
+                  stopRecordingUserAction();
                   setEditTextItem(null);
                   setEditTextInput('');
                 }}
@@ -1387,13 +1574,28 @@ export default function App() {
                 إلغاء
               </button>
             </div>
-            <textarea
-              value={editTextInput}
-              onChange={(e) => setEditTextInput(e.target.value)}
-              placeholder="اكتب تعديلك هنا..."
-              className="w-full h-48 bg-white/5 border border-white/10 rounded-2xl p-4 text-white placeholder:text-gray-600 focus:outline-none focus:border-white/30 transition-colors resize-none text-lg leading-relaxed custom-scrollbar"
-              dir="rtl"
-            />
+            <div className="w-full h-48 bg-white/5 border border-white/10 rounded-2xl flex flex-row focus-within:border-white/30 transition-colors" dir="rtl">
+              <textarea
+                value={editTextInput}
+                onChange={(e) => {
+                  setEditTextInput(e.target.value);
+                  recordingTextRef.current = e.target.value;
+                }}
+                placeholder="اكتب تعديلك هنا..."
+                className="flex-1 bg-transparent p-4 text-white placeholder:text-gray-600 focus:outline-none resize-none text-lg leading-relaxed custom-scrollbar h-full"
+                dir="rtl"
+              />
+              <div className="w-14 border-r border-white/10 flex items-end justify-center pb-3 flex-shrink-0">
+                <button
+                  type="button"
+                  className={`p-2 rounded-full transition-all duration-300 flex items-center justify-center ${isRecording ? 'bg-red-500/30 text-red-500 animate-pulse shadow-[0_0_20px_rgba(239,68,68,0.6)] scale-110' : 'bg-white/5 text-gray-400 hover:text-white hover:bg-white/10'}`}
+                  onClick={() => toggleRecording(setEditTextInput, editTextInput)}
+                  title="تحدث"
+                >
+                  <Mic size={20} />
+                </button>
+              </div>
+            </div>
             <div className="flex justify-end w-full mt-2">
               <button 
                 onClick={async () => {
@@ -1428,6 +1630,7 @@ export default function App() {
                   localStorage.setItem(editHistoryKey, JSON.stringify(recentEdits));
                   
                   setShowEditTextPopup(false);
+                  stopRecordingUserAction();
                   setEditTextItem(null);
                   setEditTextInput('');
                 }} 
@@ -1464,6 +1667,77 @@ export default function App() {
               >
                 نعم
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {shareModalText && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 backdrop-blur-sm px-4" onClick={() => setShareModalText(null)}>
+          <div 
+            className="bg-[#111] border border-white/10 rounded-[32px] flex flex-col w-full max-w-md shadow-[0_0_40px_rgba(0,0,0,0.8)] relative max-h-[80vh] overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+            dir="rtl"
+          >
+            <div className="flex justify-between items-center w-full p-6 pb-4 border-b border-white/10">
+              <div className="text-xl text-white font-medium">مشاركة عبر</div>
+              <button 
+                onClick={() => setShareModalText(null)}
+                className="text-gray-500 hover:text-white transition-colors cursor-pointer bg-transparent border-none outline-none"
+              >
+                <X size={24} />
+              </button>
+            </div>
+            <div className="p-6 overflow-y-auto custom-scrollbar flex-1">
+              <div className="text-sm text-green-400 mb-6 font-medium text-center bg-green-400/10 py-3 rounded-xl">
+                تم نسخ النص بنجاح!
+              </div>
+
+              {navigator.share && (
+                <button
+                  onClick={async () => {
+                    try {
+                      await navigator.share({
+                        text: shareModalText || '',
+                      });
+                    } catch (err) {
+                      console.log('Error sharing:', err);
+                    }
+                  }}
+                  className="w-full flex items-center justify-center gap-3 p-4 mb-6 rounded-xl bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/30 text-blue-400 transition-colors cursor-pointer"
+                >
+                  <Share2 size={20} />
+                  <span className="font-medium">مشاركة عبر تطبيقات الجهاز</span>
+                </button>
+              )}
+
+              <div className="grid grid-cols-2 gap-3" dir="ltr">
+                {sharePlatforms.map((platform) => {
+                  const href = `https://${platform.domain}`;
+                  
+                  return (
+                  <a
+                    key={platform.name}
+                    href={href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={() => {
+                      navigator.clipboard.writeText(shareModalText || '');
+                      alert('تم نسخ النص بنجاح! يتم الآن فتح المنصة لتتمكن من لصقه.');
+                      setTimeout(() => setShareModalText(null), 100);
+                    }}
+                    className="flex items-center justify-start gap-3 p-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 text-white transition-colors cursor-pointer"
+                  >
+                    <img 
+                      src={`https://www.google.com/s2/favicons?domain=${platform.domain}&sz=64`} 
+                      alt={platform.name}
+                      className="w-6 h-6 rounded-md bg-white p-0.5 object-contain" 
+                      loading="lazy"
+                    />
+                    <span className="font-medium text-[15px]">{platform.name}</span>
+                  </a>
+                )})}
+              </div>
             </div>
           </div>
         </div>
