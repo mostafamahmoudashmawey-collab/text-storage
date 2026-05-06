@@ -116,7 +116,7 @@ const syncTextsFromRemoteDB = async (userId: string) => {
                 userId: String(row[1]),
                 text: String(row[2]),
                 timestamp: Number(row[3]),
-                starred: Boolean(row[4])
+                starred: Number(row[4]) === 1
             });
         }
       }
@@ -248,7 +248,7 @@ const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; e
     for (const row of data) {
       if (String(row[0]) === String(id) && row[1] === "USER_AUTH") {
         found = true;
-        currentPass = String(row[2]); // keep taking the latest appended as current password
+        currentPass = String(row[2] ?? "").padStart(5, '0'); // pad left with zeros safely
       }
     }
 
