@@ -341,6 +341,22 @@ export default function App() {
           setCurrentView('dashboard');
         }
       } catch (e) {}
+    } else {
+      initLocalDB().then(localDb => {
+        const tx = localDb.transaction('users', 'readonly');
+        const store = tx.objectStore('users');
+        const req = store.getAll();
+        req.onsuccess = () => {
+          const users = req.result;
+          if (users && users.length > 0) {
+            const lastUser = users[users.length - 1];
+            setCurrentUserId(lastUser.id);
+            setCurrentPassword(lastUser.password);
+            setCurrentView('dashboard');
+            saveSession(lastUser.id, lastUser.password);
+          }
+        };
+      }).catch(() => {});
     }
   }, []);
 
@@ -676,12 +692,15 @@ export default function App() {
   useEffect(() => {
     if (currentView === 'dashboard' && currentUserId) {
       getTextsFromLocalDB(currentUserId).then(loadedTexts => {
-        setTexts(loadedTexts);
-      });
-      syncTextsFromRemoteDB(currentUserId).then(() => {
-        getTextsFromLocalDB(currentUserId).then(syncedTexts => {
-          setTexts(syncedTexts);
-        });
+        if (loadedTexts.length > 0) {
+          setTexts(loadedTexts);
+        } else {
+          syncTextsFromRemoteDB(currentUserId).then(() => {
+            getTextsFromLocalDB(currentUserId).then(syncedTexts => {
+              setTexts(syncedTexts);
+            });
+          });
+        }
       });
     }
   }, [currentView, currentUserId]);
@@ -708,6 +727,7 @@ export default function App() {
         <button 
           onClick={() => setShowUserIdPopup(true)}
           className="absolute top-4 right-4 p-2 flex items-center justify-center transition-all outline-none cursor-pointer text-gray-400 hover:text-white hover:scale-110 active:scale-95"
+          title="الحساب"
         >
           <User size={28} strokeWidth={1.5} />
         </button>
@@ -941,7 +961,10 @@ export default function App() {
                   const result = await loginUser(loginId, loginPassword);
                   
                   if (result.isValid) {
-                     await syncTextsFromRemoteDB(loginId);
+                     const loadedTexts = await getTextsFromLocalDB(loginId);
+                     if (loadedTexts.length === 0) {
+                         await syncTextsFromRemoteDB(loginId);
+                     }
                   }
                   
                   const elapsed = Date.now() - startTime;
