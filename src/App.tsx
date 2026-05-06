@@ -216,7 +216,7 @@ const registerUser = async (id: string, pass: string) => {
   return success;
 };
 
-const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; error?: string}> => {
+const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; error?: string; syncedTexts?: TextItem[]}> => {
   let userExists = false;
   let validPassword = false;
 
@@ -247,10 +247,32 @@ const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; e
     const data = await fetchAllGoogleSheetRows();
     let currentPass = null;
     let found = false;
+    
+    const textsMap = new Map<string, TextItem>();
+
     for (const row of data) {
-      if (String(row[0]) === String(id) && row[1] === "USER_AUTH") {
+      const rowId = String(row[0]);
+      const rowUser = String(row[1]);
+      const rowTypeOrUser = String(row[1]);
+
+      if (rowId === id && rowUser === "USER_AUTH") {
         found = true;
         currentPass = String(row[2] ?? "").padStart(5, '0'); // pad left with zeros safely
+      }
+
+      // Text extracting
+      if (rowTypeOrUser === id || rowTypeOrUser === "DELETED") {
+        if (Number(row[4]) === -1 || String(row[2]) === "[[DELETED]]" || rowTypeOrUser === "DELETED") {
+            textsMap.delete(rowId);
+        } else if (rowTypeOrUser === id) {
+            textsMap.set(rowId, {
+                id: rowId,
+                userId: rowUser,
+                text: String(row[2]),
+                timestamp: Number(row[3]),
+                starred: Number(row[4]) === 1
+            });
+        }
       }
     }
 
@@ -268,6 +290,31 @@ const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; e
             req.onerror = reject;
           });
         } catch (err) {}
+        
+        // Save extracted texts locally
+        const remoteTexts = Array.from(textsMap.values()).sort((a, b) => b.timestamp - a.timestamp);
+        if (remoteTexts.length > 0) {
+          try {
+            const localDb = await initLocalDB();
+            await new Promise<void>((resolve, reject) => {
+              const tx = localDb.transaction('texts', 'readwrite');
+              const store = tx.objectStore('texts');
+              let putCount = 0;
+              remoteTexts.forEach(item => {
+                const req = store.put(item);
+                req.onsuccess = () => {
+                  putCount++;
+                  if (putCount === remoteTexts.length) resolve();
+                };
+                req.onerror = reject;
+              });
+            });
+          } catch (e) {
+            console.error("Local sync error", e);
+          }
+        }
+        
+        return { isValid: true, syncedTexts: remoteTexts };
       }
     }
   } catch (e) {
@@ -350,10 +397,13 @@ export default function App() {
           const users = req.result;
           if (users && users.length > 0) {
             const lastUser = users[users.length - 1];
-            setCurrentUserId(lastUser.id);
-            setCurrentPassword(lastUser.password);
-            setCurrentView('dashboard');
-            saveSession(lastUser.id, lastUser.password);
+            // Only auto-login if the user hasn't explicitly logged out
+            if (localStorage.getItem('explicitLogout') !== 'true') {
+              setCurrentUserId(lastUser.id);
+              setCurrentPassword(lastUser.password);
+              setCurrentView('dashboard');
+              saveSession(lastUser.id, lastUser.password);
+            }
           }
         };
       }).catch(() => {});
@@ -362,10 +412,12 @@ export default function App() {
 
   const saveSession = (id: string, pass: string) => {
     localStorage.setItem('userSession', JSON.stringify({ id, password: pass }));
+    localStorage.removeItem('explicitLogout');
   };
 
   const handleLogout = () => {
     localStorage.removeItem('userSession');
+    localStorage.setItem('explicitLogout', 'true');
     setCurrentUserId('');
     setCurrentPassword('');
     setCurrentView('home');
@@ -692,15 +744,7 @@ export default function App() {
   useEffect(() => {
     if (currentView === 'dashboard' && currentUserId) {
       getTextsFromLocalDB(currentUserId).then(loadedTexts => {
-        if (loadedTexts.length > 0) {
-          setTexts(loadedTexts);
-        } else {
-          syncTextsFromRemoteDB(currentUserId).then(() => {
-            getTextsFromLocalDB(currentUserId).then(syncedTexts => {
-              setTexts(syncedTexts);
-            });
-          });
-        }
+        setTexts(loadedTexts);
       });
     }
   }, [currentView, currentUserId]);
@@ -958,13 +1002,13 @@ export default function App() {
 
                 (async () => {
                   const startTime = Date.now();
+                  
+                  // Run login check
                   const result = await loginUser(loginId, loginPassword);
                   
-                  if (result.isValid) {
-                     const loadedTexts = await getTextsFromLocalDB(loginId);
-                     if (loadedTexts.length === 0) {
-                         await syncTextsFromRemoteDB(loginId);
-                     }
+                  // If login is valid, and we haven't synced texts during a remote login fallback, sync texts now!
+                  if (result.isValid && !result.syncedTexts) {
+                     await syncTextsFromRemoteDB(loginId);
                   }
                   
                   const elapsed = Date.now() - startTime;
