@@ -313,6 +313,8 @@ const updatePasswordInDB = async (id: string, newPass: string) => {
 
 export default function App() {
   const [currentView, setCurrentView] = useState<'home' | 'signup' | 'login' | 'dashboard'>('home');
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [loginCountdown, setLoginCountdown] = useState(7);
 
 
   const [generatedId, setGeneratedId] = useState('');
@@ -534,14 +536,46 @@ export default function App() {
     { name: 'Tumblr', domain: 'tumblr.com' },
   ];
 
-  const handleCopyId = (id: string, e?: React.MouseEvent | React.TouchEvent) => {
+  const handleCopy = (text: string, referenceId: string, e?: React.MouseEvent | React.TouchEvent) => {
     if (e) {
       e.stopPropagation();
       e.preventDefault();
     }
-    navigator.clipboard.writeText(id);
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
+    
+    const copyToClipboard = async (textToCopy: string) => {
+      try {
+        if (navigator?.clipboard?.writeText) {
+          await navigator.clipboard.writeText(textToCopy);
+        } else {
+          throw new Error('Clipboard API not available');
+        }
+      } catch (err) {
+        // Fallback for iframes or lack of permissions
+        const textArea = document.createElement("textarea");
+        textArea.value = textToCopy;
+        textArea.style.position = "fixed";
+        textArea.style.left = "-999999px";
+        textArea.style.top = "-999999px";
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        try {
+          document.execCommand('copy');
+        } catch (execErr) {
+          console.error("Fallback copy failed", execErr);
+        }
+        textArea.remove();
+      }
+    };
+
+    copyToClipboard(text).then(() => {
+      setCopiedId(referenceId);
+      setTimeout(() => setCopiedId(null), 2000);
+    });
+  };
+
+  const handleCopyId = (id: string, e?: React.MouseEvent | React.TouchEvent) => {
+    handleCopy(id, id, e);
   };
 
   const [selectedTexts, setSelectedTexts] = useState<Set<string>>(new Set());
@@ -886,31 +920,65 @@ export default function App() {
           <div className="flex flex-col w-full gap-3 mt-4">
             <button 
               onClick={() => {
-                (async () => {
-                  setLoginIdError('');
-                  setLoginPasswordError('');
-                  const result = await loginUser(loginId, loginPassword);
-                  if (result.isValid) {
-                    await syncTextsFromRemoteDB(loginId);
-                    setCurrentUserId(loginId);
-                    setCurrentPassword(loginPassword);
-                    saveSession(loginId, loginPassword);
-                    setCurrentView('dashboard');
-                  } else {
-                    if (result.error === 'لا يوجد المعرف') {
-                      setLoginIdError('عذرا هذا المعرف غير موجود');
-                    } else if (result.error === 'كلمة المرور خطا') {
-                      setLoginPasswordError('عذرا كلمة المرور خاطئة');
-                    } else {
-                      alert(result.error);
+                if (isLoggingIn) return;
+                setIsLoggingIn(true);
+                setLoginCountdown(7);
+                setLoginIdError('');
+                setLoginPasswordError('');
+                
+                const timerId = setInterval(() => {
+                  setLoginCountdown((prev) => {
+                    if (prev <= 1) {
+                      clearInterval(timerId);
+                      return 0;
                     }
+                    return prev - 1;
+                  });
+                }, 1000);
+
+                (async () => {
+                  const startTime = Date.now();
+                  const result = await loginUser(loginId, loginPassword);
+                  
+                  if (result.isValid) {
+                     await syncTextsFromRemoteDB(loginId);
                   }
+                  
+                  const elapsed = Date.now() - startTime;
+                  const remainingWait = Math.max(0, 7000 - elapsed);
+                  
+                  setTimeout(() => {
+                      setIsLoggingIn(false);
+                      clearInterval(timerId);
+                      
+                      if (result.isValid) {
+                        setCurrentUserId(loginId);
+                        setCurrentPassword(loginPassword);
+                        saveSession(loginId, loginPassword);
+                        setCurrentView('dashboard');
+                      } else {
+                        if (result.error === 'لا يوجد المعرف') {
+                          setLoginIdError('عذرا هذا المعرف غير موجود');
+                        } else if (result.error === 'كلمة المرور خطا') {
+                          setLoginPasswordError('عذرا كلمة المرور خاطئة');
+                        } else {
+                          alert(result.error);
+                        }
+                      }
+                  }, remainingWait);
                 })();
               }}
-              disabled={loginId.length !== 5 || loginPassword.length !== 5}
-              className={`w-full font-medium py-3 px-8 rounded-full shadow-[0_0_15px_rgba(255,255,255,0.2)] transition-all text-lg tracking-wide ${loginId.length === 5 && loginPassword.length === 5 ? 'bg-white hover:bg-gray-100 text-black cursor-pointer hover:scale-105 active:scale-95' : 'bg-transparent border border-gray-600 text-gray-500 cursor-not-allowed'}`}
+              disabled={loginId.length !== 5 || loginPassword.length !== 5 || isLoggingIn}
+              className={`w-full font-medium py-3 px-8 rounded-full shadow-[0_0_15px_rgba(255,255,255,0.2)] transition-all tracking-wide ${loginId.length === 5 && loginPassword.length === 5 && !isLoggingIn ? 'bg-white hover:bg-gray-100 text-black cursor-pointer hover:scale-105 active:scale-95' : 'bg-transparent border border-gray-600 text-gray-500 cursor-not-allowed'} flex flex-col items-center justify-center min-h-[56px]`}
             >
-              دخول
+              {isLoggingIn ? (
+                <div className="flex flex-col items-center justify-center pt-1">
+                  <div className="w-5 h-5 border-2 border-gray-500 border-t-white rounded-full animate-spin mb-1"></div>
+                  <span className="text-xs text-gray-400 font-mono" dir="ltr">{loginCountdown}s</span>
+                </div>
+              ) : (
+                <span className="text-lg">دخول</span>
+              )}
             </button>
 
             <button 
@@ -1020,6 +1088,13 @@ export default function App() {
                           title="مشاركة"
                         >
                           <Share2 size={18} strokeWidth={1.5} />
+                        </button>
+                        <button
+                          onClick={(e) => handleCopy(item.text, item.id, e)}
+                          className="p-1.5 md:opacity-0 md:group-hover:opacity-100 transition-opacity bg-black/40 hover:bg-black/80 rounded-full text-gray-400 hover:text-white"
+                          title="نسخ"
+                        >
+                          {copiedId === item.id ? <Check size={18} strokeWidth={1.5} className="text-green-500" /> : <Copy size={18} strokeWidth={1.5} />}
                         </button>
                       </div>
                     )}
