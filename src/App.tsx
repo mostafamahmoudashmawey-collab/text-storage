@@ -48,9 +48,9 @@ const saveTextToDB = async (textItem: TextItem) => {
   }
 
   try {
-    const { error } = await supabase.from('texts').upsert({
+    const { error } = await supabase.from('notes').upsert({
       id: textItem.id,
-      userId: textItem.userId,
+      userid: textItem.userId,
       text: textItem.text,
       timestamp: textItem.timestamp,
       starred: textItem.starred ? 1 : 0
@@ -82,12 +82,12 @@ const getTextsFromLocalDB = async (userId: string): Promise<TextItem[]> => {
 
 const syncTextsFromRemoteDB = async (userId: string) => {
   try {
-    const { data, error } = await supabase.from('texts').select('*').eq('userId', userId).order('timestamp', { ascending: false });
+    const { data, error } = await supabase.from('notes').select('*').eq('userid', userId).order('timestamp', { ascending: false });
     if (error) throw error;
     if (data && data.length > 0) {
       const texts = data.map(row => ({
         id: row.id as string,
-        userId: row.userId as string,
+        userId: row.userid as string,
         text: row.text as string,
         timestamp: row.timestamp as number,
         starred: Boolean(row.starred)
@@ -136,7 +136,7 @@ const deleteTextsFromDB = async (ids: string[]) => {
   }
 
   try {
-    const { error } = await supabase.from('texts').delete().in('id', ids);
+    const { error } = await supabase.from('notes').delete().in('id', ids);
     if (error) console.error("Supabase delete error", error);
   } catch (e) {
     console.error("Supabase delete error", e);
