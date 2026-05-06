@@ -107,15 +107,15 @@ const syncTextsFromRemoteDB = async (userId: string) => {
     // Process items sequentially to always keep the latest version.
     // Format: [id, userid, text, timestamp, starred]
     for (const row of data) {
-      if (row[1] === userId) {
+      if (String(row[1]) === String(userId)) {
         if (row[4] === -1 || row[2] === "[[DELETED]]") {
-            textsMap.delete(row[0]);
+            textsMap.delete(String(row[0]));
         } else {
-            textsMap.set(row[0], {
-                id: row[0],
-                userId: row[1],
-                text: row[2],
-                timestamp: row[3],
+            textsMap.set(String(row[0]), {
+                id: String(row[0]),
+                userId: String(row[1]),
+                text: String(row[2]),
+                timestamp: Number(row[3]),
                 starred: Boolean(row[4])
             });
         }
@@ -246,9 +246,9 @@ const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; e
     let currentPass = null;
     let found = false;
     for (const row of data) {
-      if (row[0] === id && row[1] === "USER_AUTH") {
+      if (String(row[0]) === String(id) && row[1] === "USER_AUTH") {
         found = true;
-        currentPass = row[2]; // keep taking the latest appended as current password
+        currentPass = String(row[2]); // keep taking the latest appended as current password
       }
     }
 
@@ -310,6 +310,35 @@ const updatePasswordInDB = async (id: string, newPass: string) => {
 
 export default function App() {
   const [currentView, setCurrentView] = useState<'home' | 'signup' | 'login' | 'dashboard'>('home');
+  const [loadingMessage, setLoadingMessage] = useState('');
+  const [loadingCount, setLoadingCount] = useState(5);
+  const [isGlobalLoading, setIsGlobalLoading] = useState(false);
+
+  const runWithLoader = async (promiseFn: () => Promise<any>, customMessage?: string) => {
+    setLoadingMessage(customMessage || 'جاري التحميل...');
+    setLoadingCount(5);
+    setIsGlobalLoading(true);
+    
+    let currentCount = 5;
+    const interval = setInterval(() => {
+      currentCount--;
+      if (currentCount >= 0) {
+         setLoadingCount(currentCount);
+      }
+    }, 1000);
+
+    const minWait = new Promise(resolve => setTimeout(resolve, 5000));
+    
+    try {
+      await Promise.all([promiseFn(), minWait]);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      clearInterval(interval);
+      setIsGlobalLoading(false);
+    }
+  };
+
   const [generatedId, setGeneratedId] = useState('');
   const [password, setPassword] = useState('');
   const [showSignupPassword, setShowSignupPassword] = useState(false);
@@ -583,11 +612,13 @@ export default function App() {
   };
 
   const deleteSelectedTexts = async () => {
-    const idsToDelete = Array.from(selectedTexts) as string[];
-    await deleteTextsFromDB(idsToDelete);
-    setTexts(prev => prev.filter(t => !selectedTexts.has(t.id)));
-    setSelectedTexts(new Set());
-    setShowDeleteConfirm(false);
+    runWithLoader(async () => {
+      const idsToDelete = Array.from(selectedTexts) as string[];
+      await deleteTextsFromDB(idsToDelete);
+      setTexts(prev => prev.filter(t => !selectedTexts.has(t.id)));
+      setSelectedTexts(new Set());
+      setShowDeleteConfirm(false);
+    }, "جاري الحذف...");
   };
 
   useEffect(() => {
@@ -636,7 +667,13 @@ export default function App() {
 
   useEffect(() => {
     if (currentView === 'dashboard' && currentUserId) {
-      getTextsFromLocalDB(currentUserId).then(loadedTexts => setTexts(loadedTexts));
+      runWithLoader(async () => {
+        const loadedTexts = await getTextsFromLocalDB(currentUserId);
+        setTexts(loadedTexts);
+        await syncTextsFromRemoteDB(currentUserId);
+        const syncedTexts = await getTextsFromLocalDB(currentUserId);
+        setTexts(syncedTexts);
+      }, "جاري المزامنة...");
     }
   }, [currentView, currentUserId]);
 
@@ -649,7 +686,7 @@ export default function App() {
         const data = await fetchAllGoogleSheetRows();
         let found = false;
         for (const row of data) {
-           if (row[0] === id && row[1] === "USER_AUTH") {
+           if (String(row[0]) === String(id) && row[1] === "USER_AUTH") {
              found = true;
              break;
            }
@@ -805,16 +842,18 @@ export default function App() {
 
           <div className="flex flex-col w-full gap-3 mt-4">
             <button 
-              onClick={async () => {
-                const success = await registerUser(generatedId, password);
-                if (success) {
-                  setCurrentUserId(generatedId);
-                  setCurrentPassword(password);
-                  saveSession(generatedId, password);
-                  setCurrentView('dashboard');
-                } else {
-                  alert('حدث خطأ أثناء الإنشاء. ربما المعرف مستخدم. حاول مرة أخرى.');
-                }
+              onClick={() => {
+                runWithLoader(async () => {
+                  const success = await registerUser(generatedId, password);
+                  if (success) {
+                    setCurrentUserId(generatedId);
+                    setCurrentPassword(password);
+                    saveSession(generatedId, password);
+                    setCurrentView('dashboard');
+                  } else {
+                    alert('حدث خطأ أثناء الإنشاء. ربما المعرف مستخدم. حاول مرة أخرى.');
+                  }
+                }, "جاري إنشاء الحساب...");
               }}
               disabled={password.length !== 5}
               className={`w-full font-medium py-3 px-8 rounded-full shadow-[0_0_15px_rgba(255,255,255,0.2)] transition-all text-lg tracking-wide ${password.length === 5 ? 'bg-white hover:bg-gray-100 text-black cursor-pointer hover:scale-105 active:scale-95' : 'bg-white/50 text-gray-800 cursor-not-allowed'}`}
@@ -899,25 +938,27 @@ export default function App() {
 
           <div className="flex flex-col w-full gap-3 mt-4">
             <button 
-              onClick={async () => {
-                setLoginIdError('');
-                setLoginPasswordError('');
-                const result = await loginUser(loginId, loginPassword);
-                if (result.isValid) {
-                  await syncTextsFromRemoteDB(loginId);
-                  setCurrentUserId(loginId);
-                  setCurrentPassword(loginPassword);
-                  saveSession(loginId, loginPassword);
-                  setCurrentView('dashboard');
-                } else {
-                  if (result.error === 'لا يوجد المعرف') {
-                    setLoginIdError('عذرا هذا المعرف غير موجود');
-                  } else if (result.error === 'كلمة المرور خطا') {
-                    setLoginPasswordError('عذرا كلمة المرور خاطئة');
+              onClick={() => {
+                runWithLoader(async () => {
+                  setLoginIdError('');
+                  setLoginPasswordError('');
+                  const result = await loginUser(loginId, loginPassword);
+                  if (result.isValid) {
+                    await syncTextsFromRemoteDB(loginId);
+                    setCurrentUserId(loginId);
+                    setCurrentPassword(loginPassword);
+                    saveSession(loginId, loginPassword);
+                    setCurrentView('dashboard');
                   } else {
-                    alert(result.error);
+                    if (result.error === 'لا يوجد المعرف') {
+                      setLoginIdError('عذرا هذا المعرف غير موجود');
+                    } else if (result.error === 'كلمة المرور خطا') {
+                      setLoginPasswordError('عذرا كلمة المرور خاطئة');
+                    } else {
+                      alert(result.error);
+                    }
                   }
-                }
+                }, "جاري تسجيل الدخول...");
               }}
               disabled={loginId.length !== 5 || loginPassword.length !== 5}
               className={`w-full font-medium py-3 px-8 rounded-full shadow-[0_0_15px_rgba(255,255,255,0.2)] transition-all text-lg tracking-wide ${loginId.length === 5 && loginPassword.length === 5 ? 'bg-white hover:bg-gray-100 text-black cursor-pointer hover:scale-105 active:scale-95' : 'bg-transparent border border-gray-600 text-gray-500 cursor-not-allowed'}`}
@@ -1285,26 +1326,28 @@ export default function App() {
               {isEditingPassword && (
                 <div className="mt-2 flex justify-center animate-in fade-in zoom-in-95 duration-200">
                   <button 
-                    onClick={async () => {
-                      if (newPasswordValue.length === 5) {
-                        await updatePasswordInDB(currentUserId, newPasswordValue);
-                        setCurrentPassword(newPasswordValue);
-                        saveSession(currentUserId, newPasswordValue);
-                        // Also update password and loginPassword if needed matching the current user logic
-                        setPassword(newPasswordValue);
-                        setLoginPassword(newPasswordValue);
+                    onClick={() => {
+                      runWithLoader(async () => {
+                        if (newPasswordValue.length === 5) {
+                          await updatePasswordInDB(currentUserId, newPasswordValue);
+                          setCurrentPassword(newPasswordValue);
+                          saveSession(currentUserId, newPasswordValue);
+                          // Also update password and loginPassword if needed matching the current user logic
+                          setPassword(newPasswordValue);
+                          setLoginPassword(newPasswordValue);
 
-                        const pwdEditHistoryKey = `passwordEditHistory_${currentUserId}`;
-                        const storedHistory = localStorage.getItem(pwdEditHistoryKey);
-                        const pwdEditTimestamps: number[] = storedHistory ? JSON.parse(storedHistory) : [];
-                        const SEVEN_DAYS_MS = 168 * 60 * 60 * 1000;
-                        const recentPwdEdits = pwdEditTimestamps.filter(ts => Date.now() - ts < SEVEN_DAYS_MS);
-                        recentPwdEdits.push(Date.now());
-                        localStorage.setItem(pwdEditHistoryKey, JSON.stringify(recentPwdEdits));
+                          const pwdEditHistoryKey = `passwordEditHistory_${currentUserId}`;
+                          const storedHistory = localStorage.getItem(pwdEditHistoryKey);
+                          const pwdEditTimestamps: number[] = storedHistory ? JSON.parse(storedHistory) : [];
+                          const SEVEN_DAYS_MS = 168 * 60 * 60 * 1000;
+                          const recentPwdEdits = pwdEditTimestamps.filter(ts => Date.now() - ts < SEVEN_DAYS_MS);
+                          recentPwdEdits.push(Date.now());
+                          localStorage.setItem(pwdEditHistoryKey, JSON.stringify(recentPwdEdits));
 
-                        setIsEditingPassword(false);
-                        setShowUserIdPassword(true);
-                      }
+                          setIsEditingPassword(false);
+                          setShowUserIdPassword(true);
+                        }
+                      }, "جاري تغيير كلمة المرور...");
                     }}
                     disabled={newPasswordValue.length !== 5}
                     className={`w-32 py-2 rounded-xl text-sm font-medium transition-colors ${newPasswordValue.length === 5 ? 'bg-white text-black hover:bg-gray-200 cursor-pointer' : 'bg-white/10 text-gray-500 cursor-not-allowed'}`}
@@ -1417,7 +1460,7 @@ export default function App() {
             </div>
             <div className="flex justify-end w-full mt-2">
               <button 
-                onClick={async () => {
+                onClick={() => {
                   if (!newText.trim()) return;
                   
                   const currentWords = texts.reduce((count, item) => {
@@ -1439,18 +1482,20 @@ export default function App() {
                     return;
                   }
 
-                  const newItem: TextItem = {
-                    id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(),
-                    userId: currentUserId,
-                    text: newText.trim(),
-                    timestamp: Date.now()
-                  };
-                  await saveTextToDB(newItem);
-                  setTexts((prev) => [newItem, ...prev]);
-                  setShowAddTextPopup(false);
-                  stopRecordingUserAction();
-                  setNewText('');
-                }} 
+                  runWithLoader(async () => {
+                    const newItem: TextItem = {
+                      id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(),
+                      userId: currentUserId,
+                      text: newText.trim(),
+                      timestamp: Date.now()
+                    };
+                    await saveTextToDB(newItem);
+                    setTexts((prev) => [newItem, ...prev]);
+                    setShowAddTextPopup(false);
+                    stopRecordingUserAction();
+                    setNewText('');
+                  }, "جاري الحفظ...");
+                }}
                 disabled={!newText.trim()}
                 className={`w-32 py-2 rounded-full font-medium transition-all text-lg ${newText.trim() ? 'bg-white text-black hover:bg-gray-200 cursor-pointer hover:scale-105 active:scale-95 shadow-[0_0_15px_rgba(255,255,255,0.2)]' : 'bg-white/20 text-gray-500 cursor-not-allowed'}`}
               >
@@ -1652,7 +1697,7 @@ export default function App() {
             </div>
             <div className="flex justify-end w-full mt-2">
               <button 
-                onClick={async () => {
+                onClick={() => {
                   if (!editTextInput.trim()) return;
 
                   const currentWords = texts.reduce((count, item) => {
@@ -1666,27 +1711,29 @@ export default function App() {
                     return;
                   }
 
-                  const updatedItem: TextItem = {
-                    ...editTextItem,
-                    text: editTextInput.trim()
-                  };
-                  
-                  await saveTextToDB(updatedItem);
-                  setTexts((prev) => prev.map(t => t.id === updatedItem.id ? updatedItem : t));
-                  
-                  // Record edit timestamp
-                  const editHistoryKey = `editHistory_${currentUserId}`;
-                  const storedHistory = localStorage.getItem(editHistoryKey);
-                  const editTimestamps: number[] = storedHistory ? JSON.parse(storedHistory) : [];
-                  const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
-                  const recentEdits = editTimestamps.filter(ts => Date.now() - ts < THIRTY_DAYS_MS);
-                  recentEdits.push(Date.now());
-                  localStorage.setItem(editHistoryKey, JSON.stringify(recentEdits));
-                  
-                  setShowEditTextPopup(false);
-                  stopRecordingUserAction();
-                  setEditTextItem(null);
-                  setEditTextInput('');
+                  runWithLoader(async () => {
+                    const updatedItem: TextItem = {
+                      ...editTextItem,
+                      text: editTextInput.trim()
+                    };
+                    
+                    await saveTextToDB(updatedItem);
+                    setTexts((prev) => prev.map(t => t.id === updatedItem.id ? updatedItem : t));
+                    
+                    // Record edit timestamp
+                    const editHistoryKey = `editHistory_${currentUserId}`;
+                    const storedHistory = localStorage.getItem(editHistoryKey);
+                    const editTimestamps: number[] = storedHistory ? JSON.parse(storedHistory) : [];
+                    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+                    const recentEdits = editTimestamps.filter(ts => Date.now() - ts < THIRTY_DAYS_MS);
+                    recentEdits.push(Date.now());
+                    localStorage.setItem(editHistoryKey, JSON.stringify(recentEdits));
+                    
+                    setShowEditTextPopup(false);
+                    stopRecordingUserAction();
+                    setEditTextItem(null);
+                    setEditTextInput('');
+                  }, "جاري التعديل...");
                 }} 
                 disabled={!editTextInput.trim() || editTextInput.trim() === editTextItem.text}
                 className={`w-32 py-2 rounded-full font-medium transition-all text-lg ${editTextInput.trim() && editTextInput.trim() !== editTextItem.text ? 'bg-white text-black hover:bg-gray-200 cursor-pointer hover:scale-105 active:scale-95 shadow-[0_0_15px_rgba(255,255,255,0.2)]' : 'bg-white/20 text-gray-500 cursor-not-allowed'}`}
@@ -1793,6 +1840,16 @@ export default function App() {
                 )})}
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {isGlobalLoading && (
+        <div className="fixed inset-0 bg-black/60 z-[999] flex items-center justify-center backdrop-blur-sm" dir="rtl">
+          <div className="bg-[#111] p-8 rounded-2xl flex flex-col items-center justify-center min-w-[250px] shadow-[0_0_40px_rgba(0,0,0,0.8)] border border-white/10 animate-in fade-in zoom-in duration-200">
+            <div className="w-16 h-16 border-4 border-white/10 border-t-white rounded-full animate-spin mb-6"></div>
+            <div className="text-4xl font-extrabold text-white mb-4">{loadingCount}</div>
+            <div className="text-lg text-gray-300 font-medium text-center">{loadingMessage}</div>
           </div>
         </div>
       )}
