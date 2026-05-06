@@ -5,7 +5,27 @@
 
 import { Eye, EyeOff, Plus, User, Trash2, Pencil, Copy, Check, X, Star, Share2, Mic } from 'lucide-react';
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { supabase } from './db';
+const GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbyiEns9GDoPmwDTKM7WdmMghaKrB_K_QQ2CBuW__0CyZC2GS-axQOSC0H4WrUoW2A2xPQ/exec";
+
+// Fetch all rows from the Google Sheet
+const fetchAllGoogleSheetRows = async () => {
+  const res = await fetch(GOOGLE_SHEETS_URL, { method: "GET" });
+  if (!res.ok) throw new Error("Failed to fetch Google Sheet");
+  const data: any[][] = await res.json();
+  return data;
+};
+
+// Append a row to the Google Sheet
+const appendToGoogleSheet = async (payload: any) => {
+  const res = await fetch(GOOGLE_SHEETS_URL, {
+    method: "POST",
+    body: JSON.stringify(payload),
+    headers: { "Content-Type": "text/plain" }
+  });
+  if (!res.ok) throw new Error("Failed to append to Google Sheet");
+  return await res.json();
+};
+
 
 interface TextItem {
   id: string;
@@ -48,16 +68,15 @@ const saveTextToDB = async (textItem: TextItem) => {
   }
 
   try {
-    const { error } = await supabase.from('notes').upsert({
+    await appendToGoogleSheet({
       id: textItem.id,
       userid: textItem.userId,
       text: textItem.text,
       timestamp: textItem.timestamp,
       starred: textItem.starred ? 1 : 0
     });
-    if (error) console.error("Supabase save error", error);
   } catch (e) {
-    console.error("Supabase save error", e);
+    console.error("Google Sheets save error", e);
   }
   return true;
 };
@@ -82,17 +101,30 @@ const getTextsFromLocalDB = async (userId: string): Promise<TextItem[]> => {
 
 const syncTextsFromRemoteDB = async (userId: string) => {
   try {
-    const { data, error } = await supabase.from('notes').select('*').eq('userid', userId).order('timestamp', { ascending: false });
-    if (error) throw error;
-    if (data && data.length > 0) {
-      const texts = data.map(row => ({
-        id: row.id as string,
-        userId: row.userid as string,
-        text: row.text as string,
-        timestamp: row.timestamp as number,
-        starred: Boolean(row.starred)
-      }));
-      
+    const data = await fetchAllGoogleSheetRows();
+    const textsMap = new Map<string, TextItem>();
+    
+    // Process items sequentially to always keep the latest version.
+    // Format: [id, userid, text, timestamp, starred]
+    for (const row of data) {
+      if (row[1] === userId) {
+        if (row[4] === -1 || row[2] === "[[DELETED]]") {
+            textsMap.delete(row[0]);
+        } else {
+            textsMap.set(row[0], {
+                id: row[0],
+                userId: row[1],
+                text: row[2],
+                timestamp: row[3],
+                starred: Boolean(row[4])
+            });
+        }
+      }
+    }
+    
+    const texts = Array.from(textsMap.values()).sort((a, b) => b.timestamp - a.timestamp);
+    
+    if (texts.length > 0) {
       try {
         const localDb = await initLocalDB();
         await new Promise<void>((resolve, reject) => {
@@ -115,7 +147,7 @@ const syncTextsFromRemoteDB = async (userId: string) => {
       }
     }
   } catch (e) {
-    console.error("Supabase fetch error", e);
+    console.error("Google Sheets fetch error", e);
   }
 };
 
@@ -136,10 +168,17 @@ const deleteTextsFromDB = async (ids: string[]) => {
   }
 
   try {
-    const { error } = await supabase.from('notes').delete().in('id', ids);
-    if (error) console.error("Supabase delete error", error);
+    for (const id of ids) {
+       await appendToGoogleSheet({
+           id,
+           userid: "DELETED", // just as extra measure
+           text: "[[DELETED]]",
+           timestamp: Date.now(),
+           starred: -1
+       });
+    }
   } catch (e) {
-    console.error("Supabase delete error", e);
+    console.error("Google Sheets delete error", e);
   }
   return true;
 };
@@ -161,11 +200,16 @@ const registerUser = async (id: string, pass: string) => {
   }
 
   try {
-    const { error } = await supabase.from('users').insert({ id, password: pass });
-    if (!error) success = true;
-    else console.error("Supabase register error", error);
+    await appendToGoogleSheet({
+        id,
+        userid: "USER_AUTH",
+        text: pass,
+        timestamp: Date.now(),
+        starred: 0
+    });
+    success = true;
   } catch (e) {
-    console.error("Supabase register error", e);
+    console.error("Google Sheets register error", e);
   }
   return success;
 };
@@ -198,11 +242,19 @@ const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; e
   }
 
   try {
-    const { data, error } = await supabase.from('users').select('*').eq('id', id);
-    if (error) throw error;
-    if (data && data.length > 0) {
+    const data = await fetchAllGoogleSheetRows();
+    let currentPass = null;
+    let found = false;
+    for (const row of data) {
+      if (row[0] === id && row[1] === "USER_AUTH") {
+        found = true;
+        currentPass = row[2]; // keep taking the latest appended as current password
+      }
+    }
+
+    if (found) {
       userExists = true;
-      if (data[0].password === pass) {
+      if (currentPass === pass) {
         validPassword = true;
         try {
           const localDb = await initLocalDB();
@@ -217,7 +269,7 @@ const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; e
       }
     }
   } catch (e) {
-    console.error("Supabase login error", e);
+    console.error("Google Sheets login error", e);
   }
   
   if (validPassword) {
@@ -244,10 +296,15 @@ const updatePasswordInDB = async (id: string, newPass: string) => {
   }
 
   try {
-    const { error } = await supabase.from('users').update({ password: newPass }).eq('id', id);
-    if (error) console.error("Supabase update password error", error);
+    await appendToGoogleSheet({
+        id,
+        userid: "USER_AUTH",
+        text: newPass,
+        timestamp: Date.now(),
+        starred: 0
+    });
   } catch (e) {
-    console.error("Supabase update password error", e);
+    console.error("Google Sheets update password error", e);
   }
 };
 
@@ -589,8 +646,15 @@ export default function App() {
     while (!unique) {
       id = Math.floor(10000 + Math.random() * 90000).toString();
       try {
-        const { data } = await supabase.from('users').select('id').eq('id', id);
-        if (!data || data.length === 0) {
+        const data = await fetchAllGoogleSheetRows();
+        let found = false;
+        for (const row of data) {
+           if (row[0] === id && row[1] === "USER_AUTH") {
+             found = true;
+             break;
+           }
+        }
+        if (!found) {
           unique = true;
         }
       } catch (e) {
