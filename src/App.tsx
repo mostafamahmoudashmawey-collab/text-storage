@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Eye, EyeOff, Plus, User, Trash2, Pencil, Copy, Check, X, Star, Share2, Mic, MicPulse } from 'lucide-react';
-import { useState, useEffect, useRef, useMemo } from 'react';
-import { db } from './db';
+import { Eye, EyeOff, Plus, User, Trash2, Pencil, Copy, Check, X, Star, Share2, Mic } from 'lucide-react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { supabase } from './db';
 
 interface TextItem {
   id: string;
@@ -48,12 +48,16 @@ const saveTextToDB = async (textItem: TextItem) => {
   }
 
   try {
-    await db.execute({
-      sql: `INSERT INTO texts (id, userId, text, timestamp, starred) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET text=excluded.text, timestamp=excluded.timestamp, starred=excluded.starred`,
-      args: [textItem.id, textItem.userId, textItem.text, textItem.timestamp, textItem.starred ? 1 : 0]
+    const { error } = await supabase.from('texts').upsert({
+      id: textItem.id,
+      userId: textItem.userId,
+      text: textItem.text,
+      timestamp: textItem.timestamp,
+      starred: textItem.starred ? 1 : 0
     });
+    if (error) console.error("Supabase save error", error);
   } catch (e) {
-    console.error("Turso save error", e);
+    console.error("Supabase save error", e);
   }
   return true;
 };
@@ -78,12 +82,10 @@ const getTextsFromLocalDB = async (userId: string): Promise<TextItem[]> => {
 
 const syncTextsFromRemoteDB = async (userId: string) => {
   try {
-    const result = await db.execute({
-      sql: 'SELECT * FROM texts WHERE userId = ? ORDER BY timestamp DESC',
-      args: [userId]
-    });
-    if (result.rows.length > 0) {
-      const texts = result.rows.map(row => ({
+    const { data, error } = await supabase.from('texts').select('*').eq('userId', userId).order('timestamp', { ascending: false });
+    if (error) throw error;
+    if (data && data.length > 0) {
+      const texts = data.map(row => ({
         id: row.id as string,
         userId: row.userId as string,
         text: row.text as string,
@@ -113,7 +115,7 @@ const syncTextsFromRemoteDB = async (userId: string) => {
       }
     }
   } catch (e) {
-    console.error("Turso fetch error", e);
+    console.error("Supabase fetch error", e);
   }
 };
 
@@ -134,13 +136,10 @@ const deleteTextsFromDB = async (ids: string[]) => {
   }
 
   try {
-    const placeholders = ids.map(() => '?').join(',');
-    await db.execute({
-      sql: `DELETE FROM texts WHERE id IN (${placeholders})`,
-      args: ids
-    });
+    const { error } = await supabase.from('texts').delete().in('id', ids);
+    if (error) console.error("Supabase delete error", error);
   } catch (e) {
-    console.error("Turso delete error", e);
+    console.error("Supabase delete error", e);
   }
   return true;
 };
@@ -162,13 +161,11 @@ const registerUser = async (id: string, pass: string) => {
   }
 
   try {
-    await db.execute({
-      sql: 'INSERT INTO users (id, password) VALUES (?, ?)',
-      args: [id, pass]
-    });
-    success = true;
+    const { error } = await supabase.from('users').insert({ id, password: pass });
+    if (!error) success = true;
+    else console.error("Supabase register error", error);
   } catch (e) {
-    console.error("Turso register error", e);
+    console.error("Supabase register error", e);
   }
   return success;
 };
@@ -201,13 +198,11 @@ const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; e
   }
 
   try {
-    const result = await db.execute({
-      sql: 'SELECT * FROM users WHERE id = ?',
-      args: [id]
-    });
-    if (result.rows.length > 0) {
+    const { data, error } = await supabase.from('users').select('*').eq('id', id);
+    if (error) throw error;
+    if (data && data.length > 0) {
       userExists = true;
-      if (result.rows[0].password === pass) {
+      if (data[0].password === pass) {
         validPassword = true;
         try {
           const localDb = await initLocalDB();
@@ -222,7 +217,7 @@ const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; e
       }
     }
   } catch (e) {
-    console.error("Turso login error", e);
+    console.error("Supabase login error", e);
   }
   
   if (validPassword) {
@@ -249,12 +244,10 @@ const updatePasswordInDB = async (id: string, newPass: string) => {
   }
 
   try {
-    await db.execute({
-      sql: 'UPDATE users SET password = ? WHERE id = ?',
-      args: [newPass, id]
-    });
+    const { error } = await supabase.from('users').update({ password: newPass }).eq('id', id);
+    if (error) console.error("Supabase update password error", error);
   } catch (e) {
-    console.error("Turso update password error", e);
+    console.error("Supabase update password error", e);
   }
 };
 
@@ -533,7 +526,7 @@ export default function App() {
   };
 
   const deleteSelectedTexts = async () => {
-    const idsToDelete = Array.from(selectedTexts);
+    const idsToDelete = Array.from(selectedTexts) as string[];
     await deleteTextsFromDB(idsToDelete);
     setTexts(prev => prev.filter(t => !selectedTexts.has(t.id)));
     setSelectedTexts(new Set());
@@ -559,7 +552,7 @@ export default function App() {
       },
       deleteText: async (id: string) => {
         if (!currentUserId) return;
-        await deleteTextFromDB(id);
+        await deleteTextsFromDB([id]);
         setTexts((prev) => prev.filter((t) => t.id !== id));
       },
       getTexts: async () => {
@@ -596,11 +589,8 @@ export default function App() {
     while (!unique) {
       id = Math.floor(10000 + Math.random() * 90000).toString();
       try {
-        const result = await db.execute({
-          sql: 'SELECT id FROM users WHERE id = ?',
-          args: [id]
-        });
-        if (result.rows.length === 0) {
+        const { data } = await supabase.from('users').select('id').eq('id', id);
+        if (!data || data.length === 0) {
           unique = true;
         }
       } catch (e) {
