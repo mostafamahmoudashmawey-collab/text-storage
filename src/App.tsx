@@ -53,7 +53,7 @@ const initLocalDB = (): Promise<IDBDatabase> => {
   });
 };
 
-const saveTextToDB = async (textItem: TextItem) => {
+const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
   try {
     const localDb = await initLocalDB();
     await new Promise((resolve, reject) => {
@@ -69,6 +69,7 @@ const saveTextToDB = async (textItem: TextItem) => {
 
   try {
     await appendToGoogleSheet({
+      action: isUpdate ? "UPDATE" : "ADD",
       id: textItem.id,
       userid: textItem.userId,
       text: textItem.text,
@@ -107,10 +108,10 @@ const syncTextsFromRemoteDB = async (userId: string) => {
     // Process items sequentially to always keep the latest version.
     // Format: [id, userid, text, timestamp, starred]
     for (const row of data) {
-      if (String(row[1]) === String(userId)) {
-        if (row[4] === -1 || row[2] === "[[DELETED]]") {
+      if (String(row[1]) === String(userId) || String(row[1]) === "DELETED") {
+        if (Number(row[4]) === -1 || String(row[2]) === "[[DELETED]]" || String(row[1]) === "DELETED") {
             textsMap.delete(String(row[0]));
-        } else {
+        } else if (String(row[1]) === String(userId)) {
             textsMap.set(String(row[0]), {
                 id: String(row[0]),
                 userId: String(row[1]),
@@ -170,6 +171,7 @@ const deleteTextsFromDB = async (ids: string[]) => {
   try {
     for (const id of ids) {
        await appendToGoogleSheet({
+           action: "DELETE",
            id,
            userid: "DELETED", // just as extra measure
            text: "[[DELETED]]",
@@ -297,6 +299,7 @@ const updatePasswordInDB = async (id: string, newPass: string) => {
 
   try {
     await appendToGoogleSheet({
+        action: "UPDATE",
         id,
         userid: "USER_AUTH",
         text: newPass,
@@ -1041,7 +1044,7 @@ export default function App() {
                             e.stopPropagation();
                             e.preventDefault();
                             const updatedItem = { ...item, starred: !item.starred };
-                            await saveTextToDB(updatedItem);
+                            await saveTextToDB(updatedItem, true);
                             setTexts(prev => prev.map(t => t.id === item.id ? updatedItem : t));
                           }}
                           className={`p-1.5 transition-all rounded-full cursor-pointer outline-none bg-transparent border-none ${item.starred ? 'opacity-100 text-yellow-500 hover:text-yellow-400' : 'opacity-0 group-hover:opacity-100 text-gray-500 hover:text-white hover:bg-white/10'}`}
@@ -1717,7 +1720,7 @@ export default function App() {
                       text: editTextInput.trim()
                     };
                     
-                    await saveTextToDB(updatedItem);
+                    await saveTextToDB(updatedItem, true);
                     setTexts((prev) => prev.map(t => t.id === updatedItem.id ? updatedItem : t));
                     
                     // Record edit timestamp
