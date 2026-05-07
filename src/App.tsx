@@ -789,19 +789,37 @@ export default function App() {
          setTexts(localTexts);
       };
       
+      let isSyncing = false;
       const fetchAndSync = async () => {
-        await syncTextsFromRemoteDB(currentUserId);
-        await fetchFromLocal();
+        if (isSyncing) return;
+        isSyncing = true;
+        try {
+          await syncTextsFromRemoteDB(currentUserId);
+          await fetchFromLocal();
+        } catch (e) {
+          console.error(e);
+        } finally {
+          isSyncing = false;
+        }
       };
 
       bc.onmessage = (e) => {
         if (e.data === 'sync_local') {
           fetchFromLocal();
+          // Trigger a silent sync with remote as well
+          fetchAndSync();
         }
       };
       
-      // Auto-sync every 5 seconds for direct multi-device experience
-      syncInterval = setInterval(fetchAndSync, 5000);
+      const handleVisibilityChange = () => {
+        if (document.visibilityState === 'visible') {
+          fetchAndSync();
+        }
+      };
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+      
+      // Auto-sync every 1.5 seconds for direct multi-device experience
+      syncInterval = setInterval(fetchAndSync, 1500);
       
       // Trigger an immediate sync upon entering
       fetchAndSync();
@@ -809,6 +827,7 @@ export default function App() {
     return () => {
       if (syncInterval) clearInterval(syncInterval);
       if (bc) bc.close();
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [currentView, currentUserId]);
 
