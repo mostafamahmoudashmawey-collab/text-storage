@@ -53,6 +53,14 @@ const initLocalDB = (): Promise<IDBDatabase> => {
   });
 };
 
+const notifyTabSync = (userId: string) => {
+  try {
+    const bc = new BroadcastChannel(`app_sync_${userId}`);
+    bc.postMessage('sync_local');
+    bc.close();
+  } catch (e) {}
+};
+
 const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
   try {
     const localDb = await initLocalDB();
@@ -66,6 +74,8 @@ const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
   } catch (e) {
     console.error("Local save error", e);
   }
+
+  notifyTabSync(textItem.userId);
 
   try {
     await appendToGoogleSheet({
@@ -151,7 +161,7 @@ const syncTextsFromRemoteDB = async (userId: string) => {
   }
 };
 
-const deleteTextsFromDB = async (ids: string[]) => {
+const deleteTextsFromDB = async (ids: string[], userId?: string) => {
   if (ids.length === 0) return true;
   
   try {
@@ -165,6 +175,10 @@ const deleteTextsFromDB = async (ids: string[]) => {
     });
   } catch (e) {
     console.error("Local delete error", e);
+  }
+
+  if (userId) {
+    notifyTabSync(userId);
   }
 
   try {
@@ -694,7 +708,7 @@ export default function App() {
     setTexts(prev => prev.filter(t => !selectedTexts.has(t.id)));
     setSelectedTexts(new Set());
     setShowDeleteConfirm(false);
-    deleteTextsFromDB(idsToDelete).catch(e => console.error(e));
+    deleteTextsFromDB(idsToDelete, currentUserId).catch(e => console.error(e));
   };
 
   useEffect(() => {
@@ -717,7 +731,7 @@ export default function App() {
       deleteText: async (id: string) => {
         if (!currentUserId) return;
         setTexts((prev) => prev.filter((t) => t.id !== id));
-        deleteTextsFromDB([id]).catch(e => console.error(e));
+        deleteTextsFromDB([id], currentUserId).catch(e => console.error(e));
       },
       getTexts: async () => {
         if (!currentUserId) return [];
@@ -742,11 +756,41 @@ export default function App() {
   }, [currentUserId]);
 
   useEffect(() => {
+    let syncInterval: any;
+    let bc: BroadcastChannel;
     if (currentView === 'dashboard' && currentUserId) {
+      bc = new BroadcastChannel(`app_sync_${currentUserId}`);
+      
       getTextsFromLocalDB(currentUserId).then(loadedTexts => {
         setTexts(loadedTexts);
       });
+      
+      const fetchFromLocal = async () => {
+         const localTexts = await getTextsFromLocalDB(currentUserId);
+         setTexts(localTexts);
+      };
+      
+      const fetchAndSync = async () => {
+        await syncTextsFromRemoteDB(currentUserId);
+        await fetchFromLocal();
+      };
+
+      bc.onmessage = (e) => {
+        if (e.data === 'sync_local') {
+          fetchFromLocal();
+        }
+      };
+      
+      // Auto-sync every 5 seconds for direct multi-device experience
+      syncInterval = setInterval(fetchAndSync, 5000);
+      
+      // Trigger an immediate sync upon entering
+      fetchAndSync();
     }
+    return () => {
+      if (syncInterval) clearInterval(syncInterval);
+      if (bc) bc.close();
+    };
   }, [currentView, currentUserId]);
 
   const generateUniqueId = async () => {
@@ -1783,7 +1827,7 @@ export default function App() {
                       saveTextToDB(updatedItem, true).catch(e => console.error(e));
                     } else {
                       // If it's an update and now it's too long, delete old and re-chunk
-                      deleteTextsFromDB([editTextItem.id]).catch(e => console.error(e));
+                      deleteTextsFromDB([editTextItem.id], currentUserId).catch(e => console.error(e));
                       setTexts((prev) => prev.filter(t => t.id !== editTextItem.id));
                       
                       const fullText = editTextInput.trim();
