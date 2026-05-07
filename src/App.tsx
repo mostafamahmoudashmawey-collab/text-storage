@@ -114,12 +114,14 @@ const syncTextsFromRemoteDB = async (userId: string) => {
   try {
     const data = await fetchAllGoogleSheetRows();
     const textsMap = new Map<string, TextItem>();
+    const deletedIds = new Set<string>();
     
     // Process items sequentially to always keep the latest version.
     for (const row of data) {
       if (String(row[1]) === String(userId) || String(row[1]) === "DELETED") {
         if (Number(row[4]) === -1 || String(row[2]) === "[[DELETED]]" || String(row[1]) === "DELETED") {
             textsMap.delete(String(row[0]));
+            deletedIds.add(String(row[0]));
         } else if (String(row[1]) === String(userId)) {
             textsMap.set(String(row[0]), {
                 id: String(row[0]),
@@ -128,13 +130,14 @@ const syncTextsFromRemoteDB = async (userId: string) => {
                 timestamp: Number(row[3]),
                 starred: Number(row[4]) === 1
             });
+            deletedIds.delete(String(row[0]));
         }
       }
     }
     
     const remoteTexts = Array.from(textsMap.values()).sort((a, b) => b.timestamp - a.timestamp);
     
-    if (remoteTexts && remoteTexts.length > 0) {
+    if (remoteTexts.length > 0 || deletedIds.size > 0) {
       try {
         const localDb = await initLocalDB();
         await new Promise<void>((resolve, reject) => {
@@ -142,15 +145,31 @@ const syncTextsFromRemoteDB = async (userId: string) => {
           const store = tx.objectStore('texts');
           
           let putCount = 0;
-            remoteTexts.forEach(t => {
+          let deleteCount = 0;
+          
+          const checkDone = () => {
+             if (putCount === remoteTexts.length && deleteCount === deletedIds.size) resolve();
+          };
+          
+          remoteTexts.forEach(t => {
               const req = store.put(t);
               req.onsuccess = () => {
                 putCount++;
-                if (putCount === remoteTexts.length) resolve();
+                checkDone();
               };
               req.onerror = () => reject(req.error);
-            });
-          if (remoteTexts.length === 0) resolve();
+          });
+          
+          Array.from(deletedIds).forEach(id => {
+             const req = store.delete(id);
+             req.onsuccess = () => {
+                deleteCount++;
+                checkDone();
+             };
+             req.onerror = () => reject(req.error);
+          });
+          
+          if (remoteTexts.length === 0 && deletedIds.size === 0) resolve();
         });
       } catch (localErr) {
         console.error("Failed to save remote texts to local DB", localErr);
