@@ -777,6 +777,8 @@ export default function App() {
   useEffect(() => {
     let syncInterval: any;
     let bc: BroadcastChannel;
+    let visibilityHandler: (() => void) | null = null;
+    
     if (currentView === 'dashboard' && currentUserId) {
       bc = new BroadcastChannel(`app_sync_${currentUserId}`);
       
@@ -811,12 +813,12 @@ export default function App() {
         }
       };
       
-      const handleVisibilityChange = () => {
+      visibilityHandler = () => {
         if (document.visibilityState === 'visible') {
           fetchAndSync();
         }
       };
-      document.addEventListener('visibilitychange', handleVisibilityChange);
+      document.addEventListener('visibilitychange', visibilityHandler);
       
       // Auto-sync every 1.5 seconds for direct multi-device experience
       syncInterval = setInterval(fetchAndSync, 1500);
@@ -827,7 +829,9 @@ export default function App() {
     return () => {
       if (syncInterval) clearInterval(syncInterval);
       if (bc) bc.close();
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (visibilityHandler) {
+        document.removeEventListener('visibilitychange', visibilityHandler);
+      }
     };
   }, [currentView, currentUserId]);
 
