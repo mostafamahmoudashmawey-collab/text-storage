@@ -58,15 +58,19 @@ const initLocalDB = (): Promise<IDBDatabase> => {
   });
 };
 
+const TAB_ID = Math.random().toString(36).substring(2);
+let lastLocalWriteTime = 0;
+
 const notifyTabSync = (userId: string) => {
   try {
     const bc = new BroadcastChannel(`app_sync_${userId}`);
-    bc.postMessage('sync_local');
+    bc.postMessage({ type: 'sync_local', tabId: TAB_ID });
     bc.close();
   } catch (e) {}
 };
 
 const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
+  lastLocalWriteTime = Date.now();
   try {
     const localDb = await initLocalDB();
     await new Promise((resolve, reject) => {
@@ -227,6 +231,7 @@ const syncTextsFromRemoteDB = async (userId: string) => {
 
 const deleteTextsFromDB = async (ids: string[], userId?: string, isAll: boolean = false) => {
   if (ids.length === 0) return true;
+  lastLocalWriteTime = Date.now();
   
   try {
     const localDb = await initLocalDB();
@@ -901,6 +906,7 @@ export default function App() {
       let isSyncing = false;
       const fetchAndSync = async () => {
         if (isSyncing) return;
+        if (Date.now() - lastLocalWriteTime < 6000) return;
         isSyncing = true;
         try {
           await syncTextsFromRemoteDB(currentUserId);
@@ -913,7 +919,13 @@ export default function App() {
       };
 
       bc.onmessage = (e) => {
-        if (e.data === 'sync_local') {
+        if (e.data === 'sync_local' || (e.data && e.data.type === 'sync_local')) {
+          const senderTabId = e.data.tabId;
+          if (senderTabId === TAB_ID) {
+            // Ignore sync messages sent from our own tab to avoid fetching stale remote data 
+            // before the no-cors background POST has hit the Google Apps Script.
+            return;
+          }
           fetchFromLocal();
           // Trigger a silent sync with remote as well
           fetchAndSync();
