@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Eye, EyeOff, Plus, User, Trash2, Pencil, Copy, Check, X, Star, Share2, Mic } from 'lucide-react';
+import { Eye, EyeOff, Plus, User, Trash2, Pencil, Copy, Check, X, Star, Share2, Mic, Image as ImageIcon, UploadCloud } from 'lucide-react';
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 
 const GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbyiEns9GDoPmwDTKM7WdmMghaKrB_K_QQ2CBuW__0CyZC2GS-axQOSC0H4WrUoW2A2xPQ/exec";
@@ -18,13 +18,18 @@ const fetchAllGoogleSheetRows = async () => {
 
 // Append a row to the Google Sheet
 const appendToGoogleSheet = async (payload: any) => {
-  const res = await fetch(GOOGLE_SHEETS_URL, {
-    method: "POST",
-    body: JSON.stringify(payload),
-    headers: { "Content-Type": "text/plain;charset=utf-8" }
-  });
-  if (!res.ok) throw new Error("Failed to append to Google Sheet");
-  return await res.json();
+  try {
+    const res = await fetch(GOOGLE_SHEETS_URL, {
+      method: "POST",
+      body: JSON.stringify(payload),
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      mode: "no-cors"
+    });
+    return {};
+  } catch (error) {
+    console.error("Google Sheets save error", error);
+    throw error;
+  }
 };
 
 interface TextItem {
@@ -115,10 +120,15 @@ const syncTextsFromRemoteDB = async (userId: string) => {
     const data = await fetchAllGoogleSheetRows();
     const textsMap = new Map<string, TextItem>();
     const deletedIds = new Set<string>();
+    let deleteAllMarkerTime = 0;
     
     // Process items sequentially to always keep the latest version.
     for (const row of data) {
-      if (String(row[1]) === String(userId) || String(row[1]) === "DELETED") {
+      if (String(row[1]) === "DELETED" && String(row[2]) === `[[DELETE_ALL]]_${userId}`) {
+          textsMap.clear();
+          deletedIds.clear();
+          deleteAllMarkerTime = Number(row[3]);
+      } else if (String(row[1]) === String(userId) || String(row[1]) === "DELETED") {
         if (Number(row[4]) === -1 || String(row[2]) === "[[DELETED]]" || String(row[1]) === "DELETED") {
             textsMap.delete(String(row[0]));
             deletedIds.add(String(row[0]));
@@ -137,9 +147,39 @@ const syncTextsFromRemoteDB = async (userId: string) => {
     
     const remoteTexts = Array.from(textsMap.values()).sort((a, b) => b.timestamp - a.timestamp);
     
-    if (remoteTexts.length > 0 || deletedIds.size > 0) {
+    if (remoteTexts.length > 0 || deletedIds.size > 0 || deleteAllMarkerTime > 0) {
       try {
         const localDb = await initLocalDB();
+        
+        if (deleteAllMarkerTime > 0) {
+          const localTexts = await new Promise<any[]>((resolve, reject) => {
+            const tx = localDb.transaction('texts', 'readonly');
+            const store = tx.objectStore('texts');
+            const index = store.index('userId');
+            const req = index.getAll(userId);
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+          });
+          
+          const textsToDelete = localTexts.filter((t: any) => t.timestamp <= deleteAllMarkerTime);
+          
+          if (textsToDelete.length > 0) {
+            await new Promise<void>((resolve, reject) => {
+              const tx = localDb.transaction('texts', 'readwrite');
+              const store = tx.objectStore('texts');
+              let count = 0;
+              textsToDelete.forEach((t: any) => {
+                const req = store.delete(t.id);
+                req.onsuccess = () => {
+                  count++;
+                  if (count === textsToDelete.length) resolve();
+                };
+                req.onerror = () => reject(req.error);
+              });
+            });
+          }
+        }
+
         await new Promise<void>((resolve, reject) => {
           const tx = localDb.transaction('texts', 'readwrite');
           const store = tx.objectStore('texts');
@@ -175,12 +215,17 @@ const syncTextsFromRemoteDB = async (userId: string) => {
         console.error("Failed to save remote texts to local DB", localErr);
       }
     }
-  } catch (e) {
-    console.error("Google Sheets sync error", e);
+  } catch (e: any) {
+    if (e.message && e.message.includes("Failed to fetch")) {
+       // Silently ignore intermittent network/rate-limit fetch errors
+       console.warn("Sync skipped due to network/rate-limit error.");
+    } else {
+       console.error("Google Sheets sync error", e);
+    }
   }
 };
 
-const deleteTextsFromDB = async (ids: string[], userId?: string) => {
+const deleteTextsFromDB = async (ids: string[], userId?: string, isAll: boolean = false) => {
   if (ids.length === 0) return true;
   
   try {
@@ -201,15 +246,27 @@ const deleteTextsFromDB = async (ids: string[], userId?: string) => {
   }
 
   try {
-    for (const id of ids) {
-       await appendToGoogleSheet({
-           action: "DELETE",
-           id,
-           userid: "DELETED", // just as extra measure
-           text: "[[DELETED]]",
-           timestamp: Date.now(),
-           starred: -1
-       });
+    if (isAll && userId) {
+      await appendToGoogleSheet({
+          action: "DELETE_ALL",
+          id: "DELETE_ALL",
+          userid: "DELETED",
+          text: "[[DELETE_ALL]]_" + userId,
+          timestamp: Date.now(),
+          starred: -1
+      });
+    } else {
+      // Split processing into sequential Google Sheets appends
+      for (const id of ids) {
+         await appendToGoogleSheet({
+             action: "DELETE",
+             id,
+             userid: "DELETED", // just as extra measure
+             text: "[[DELETED]]",
+             timestamp: Date.now(),
+             starred: -1
+         });
+      }
     }
   } catch (e) {
     console.error("Google Sheets delete error", e);
@@ -466,6 +523,8 @@ export default function App() {
   const [isEditingPassword, setIsEditingPassword] = useState(false);
   const [newPasswordValue, setNewPasswordValue] = useState('');
   const [showAddTextPopup, setShowAddTextPopup] = useState(false);
+  const [showAddImagePopup, setShowAddImagePopup] = useState(false);
+  const [imagePreview, setImagePreview] = useState<string>('');
   const [showEditTextPopup, setShowEditTextPopup] = useState(false);
   const [editTextItem, setEditTextItem] = useState<TextItem | null>(null);
   const [showLimitPopup, setShowLimitPopup] = useState(false);
@@ -484,12 +543,17 @@ export default function App() {
       return b.timestamp - a.timestamp;
     });
   }, [texts]);
-  const recentAdditionsCount = useMemo(() => {
-    return texts.filter(t => Date.now() - t.timestamp < 24 * 60 * 60 * 1000).length;
+  const recentTextAdditionsCount = useMemo(() => {
+    return texts.filter(t => !t.text.startsWith('data:image/') && Date.now() - t.timestamp < 24 * 60 * 60 * 1000).length;
+  }, [texts]);
+  
+  const recentImageAdditionsCount = useMemo(() => {
+    return texts.filter(t => t.text.startsWith('data:image/') && Date.now() - t.timestamp < 24 * 60 * 60 * 1000).length;
   }, [texts]);
   const [expandedLengths, setExpandedLengths] = useState<Record<string, number>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [shareModalText, setShareModalText] = useState<string | null>(null);
+  const [viewedItem, setViewedItem] = useState<TextItem | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const recognitionRef = useRef<any>(null);
 
@@ -637,10 +701,51 @@ export default function App() {
     { name: 'Tumblr', domain: 'tumblr.com' },
   ];
 
-  const handleCopy = (text: string, referenceId: string, e?: React.MouseEvent | React.TouchEvent) => {
+  const handleCopy = async (text: string, referenceId: string, e?: React.MouseEvent | React.TouchEvent) => {
     if (e) {
       e.stopPropagation();
       e.preventDefault();
+    }
+    
+    if (text.startsWith('data:image/')) {
+        try {
+            const res = await fetch(text);
+            const blob = await res.blob();
+            
+            let clipboardBlob = blob;
+            let clipboardType = blob.type;
+            
+            if (blob.type !== 'image/png') {
+                clipboardBlob = await new Promise<Blob>((resolve, reject) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        canvas.width = img.width;
+                        canvas.height = img.height;
+                        const ctx = canvas.getContext('2d');
+                        ctx?.drawImage(img, 0, 0);
+                        canvas.toBlob((b) => {
+                            if (b) resolve(b);
+                            else reject(new Error("Canvas toBlob failed"));
+                        }, 'image/png');
+                    };
+                    img.onerror = reject;
+                    img.src = URL.createObjectURL(blob);
+                });
+                clipboardType = 'image/png';
+            }
+            
+            await navigator.clipboard.write([
+                new ClipboardItem({
+                    [clipboardType]: clipboardBlob
+                })
+            ]);
+            setCopiedId(referenceId);
+            setTimeout(() => setCopiedId(null), 2000);
+        } catch (err) {
+            console.error("Failed to copy image", err);
+        }
+        return;
     }
     
     const copyToClipboard = async (textToCopy: string) => {
@@ -724,10 +829,12 @@ export default function App() {
 
   const deleteSelectedTexts = async () => {
     const idsToDelete = Array.from(selectedTexts) as string[];
+    const isAll = idsToDelete.length === texts.length && texts.length > 0;
+    
     setTexts(prev => prev.filter(t => !selectedTexts.has(t.id)));
     setSelectedTexts(new Set());
     setShowDeleteConfirm(false);
-    deleteTextsFromDB(idsToDelete, currentUserId).catch(e => console.error(e));
+    deleteTextsFromDB(idsToDelete, currentUserId, isAll).catch(e => console.error(e));
   };
 
   useEffect(() => {
@@ -820,8 +927,8 @@ export default function App() {
       };
       document.addEventListener('visibilitychange', visibilityHandler);
       
-      // Auto-sync every 1.5 seconds for direct multi-device experience
-      syncInterval = setInterval(fetchAndSync, 1500);
+      // Auto-sync every 5 seconds for direct multi-device experience
+      syncInterval = setInterval(fetchAndSync, 5000);
       
       // Trigger an immediate sync upon entering
       fetchAndSync();
@@ -837,6 +944,49 @@ export default function App() {
 
   const generateUniqueId = async () => {
     return Math.floor(10000 + Math.random() * 90000).toString();
+  };
+
+  const handleImageFile = (file: File) => {
+    if (!file.type.startsWith('image/')) return;
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (e) => {
+      const src = e.target?.result as string;
+      const img = new Image();
+      img.src = src;
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+        let canvas = document.createElement('canvas');
+        let scale = 1;
+        if (width > 800 || height > 800) {
+           scale = Math.min(800 / width, 800 / height);
+        }
+        const tryCompress = (currentScale: number, quality: number) => {
+            const w = Math.floor(width * currentScale);
+            const h = Math.floor(height * currentScale);
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+               ctx.drawImage(img, 0, 0, w, h);
+               const dataUrl = canvas.toDataURL('image/jpeg', quality);
+               if (dataUrl.length <= 48000) {
+                  setImagePreview(dataUrl);
+               } else {
+                  if (quality > 0.4) {
+                      tryCompress(currentScale, quality - 0.2);
+                  } else if (currentScale > 0.3) {
+                      tryCompress(currentScale * 0.7, 0.7);
+                  } else {
+                      setImagePreview(dataUrl.substring(0, 48000));
+                  }
+               }
+            }
+        };
+        tryCompress(scale, 0.8);
+      };
+    };
   };
 
   const handleGoToSignup = async () => {
@@ -889,13 +1039,26 @@ export default function App() {
                 </button>
               </>
             )}
-            <div className="flex items-center gap-2 pointer-events-auto">
-              <span className="text-gray-500 text-sm font-medium px-2" title="عدد الإضافات اليوم">{recentAdditionsCount}</span>
+            <div className="flex items-center gap-1 pointer-events-auto">
+              <span className="text-white/30 text-base font-medium px-1" title="عدد النصوص المضافة اليوم">
+                {recentTextAdditionsCount > 0 ? recentTextAdditionsCount : ''}
+              </span>
               <button 
                 onClick={() => { setShowAddTextPopup(true); setNewText(''); }}
-                className="p-2 -mr-2 flex items-center justify-center transition-all outline-none cursor-pointer text-gray-400 hover:text-white hover:scale-110 active:scale-95"
+                className="p-2 flex items-center justify-center transition-all outline-none cursor-pointer text-gray-400 hover:text-white hover:scale-110 active:scale-95"
+                title="إضافة نص"
               >
                 <Plus size={28} strokeWidth={1.5} />
+              </button>
+              <span className="text-white/30 text-base font-medium pl-1 pr-3" title="عدد الصور المضافة اليوم">
+                {recentImageAdditionsCount > 0 ? recentImageAdditionsCount : ''}
+              </span>
+              <button 
+                onClick={() => { setShowAddImagePopup(true); setImagePreview(''); }}
+                className="p-2 flex items-center justify-center transition-all outline-none cursor-pointer text-gray-400 hover:text-white hover:scale-110 active:scale-95"
+                title="إضافة صورة"
+              >
+                <ImageIcon size={26} strokeWidth={1.5} />
               </button>
             </div>
           </div>
@@ -1145,13 +1308,22 @@ export default function App() {
       )}
 
       {currentView === 'dashboard' && texts.length === 0 && (
-        <button 
-          onClick={() => { setShowAddTextPopup(true); setNewText(''); }}
-          className="flex flex-col items-center justify-center gap-4 transition-all cursor-pointer group hover:scale-105 active:scale-95 outline-none bg-transparent border-none mt-12"
-        >
-          <Plus size={48} strokeWidth={1} className="text-gray-400 group-hover:text-white transition-colors" />
-          <span className="text-lg text-gray-400 group-hover:text-white transition-colors font-light tracking-wide">إضافة نص</span>
-        </button>
+        <div className="flex flex-row gap-6 items-center justify-center mt-12">
+          <button 
+            onClick={() => { setShowAddTextPopup(true); setNewText(''); }}
+            className="flex flex-col items-center justify-center gap-4 transition-all cursor-pointer group hover:scale-105 active:scale-95 outline-none bg-transparent border-none"
+          >
+            <Plus size={48} strokeWidth={1} className="text-gray-400 group-hover:text-white transition-colors" />
+            <span className="text-lg text-gray-400 group-hover:text-white transition-colors font-light tracking-wide">إضافة نص</span>
+          </button>
+          <button 
+            onClick={() => { setShowAddImagePopup(true); setImagePreview(''); }}
+            className="flex flex-col items-center justify-center gap-4 transition-all cursor-pointer group hover:scale-105 active:scale-95 outline-none bg-transparent border-none"
+          >
+            <ImageIcon size={48} strokeWidth={1} className="text-gray-400 group-hover:text-white transition-colors" />
+            <span className="text-lg text-gray-400 group-hover:text-white transition-colors font-light tracking-wide">إضافة صورة</span>
+          </button>
+        </div>
       )}
 
       {currentView === 'dashboard' && texts.length > 0 && (
@@ -1197,9 +1369,11 @@ export default function App() {
                       }
                       if (selectedTexts.size > 0) {
                         toggleSelection(item.id, e);
+                      } else {
+                        setViewedItem(item);
                       }
                     }}
-                    className={`bg-white/5 border ${borderClass} rounded-2xl p-5 pb-10 text-white whitespace-pre-wrap text-[17px] leading-relaxed w-full break-words text-right relative transition-all ${selectedTexts.size > 0 ? 'cursor-pointer' : ''} select-none group`} 
+                    className={`bg-white/5 border ${borderClass} rounded-2xl p-5 pb-10 text-white whitespace-pre-wrap text-[17px] leading-relaxed w-full break-words text-right relative transition-all cursor-pointer select-none group`} 
                     dir="rtl"
                   >
                     {!selectedTexts.size && (
@@ -1212,47 +1386,59 @@ export default function App() {
                             setTexts(prev => prev.map(t => t.id === item.id ? updatedItem : t));
                             saveTextToDB(updatedItem, true).catch(e => console.error(e));
                           }}
-                          className={`p-1.5 transition-all rounded-full cursor-pointer outline-none bg-transparent border-none ${item.starred ? 'opacity-100 text-yellow-500 hover:text-yellow-400' : 'opacity-0 group-hover:opacity-100 text-gray-500 hover:text-white hover:bg-white/10'}`}
+                          className={`p-1.5 transition-all cursor-pointer outline-none bg-transparent border-none ${item.starred ? 'opacity-100 text-yellow-500 hover:text-yellow-400' : 'opacity-0 group-hover:opacity-100 text-gray-500 hover:text-white'}`}
                           title={item.starred ? "إزالة التمييز" : "تثبيت كمفضلة"}
                         >
                           <Star size={22} strokeWidth={item.starred ? 2 : 1.5} className={item.starred ? "fill-yellow-500" : ""} />
                         </button>
+                        {!item.text.startsWith('data:image/') && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              e.preventDefault();
+                              setEditTextItem(item);
+                              setEditTextInput(item.text);
+                              setShowEditTextPopup(true);
+                            }}
+                            className="p-1.5 md:opacity-0 md:group-hover:opacity-100 transition-opacity bg-transparent text-gray-400 hover:text-white"
+                            title="تعديل النص"
+                          >
+                            <Pencil size={18} strokeWidth={1.5} />
+                          </button>
+                        )}
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             e.preventDefault();
-                            setEditTextItem(item);
-                            setEditTextInput(item.text);
-                            setShowEditTextPopup(true);
-                          }}
-                          className="p-1.5 md:opacity-0 md:group-hover:opacity-100 transition-opacity bg-black/40 hover:bg-black/80 rounded-full text-gray-400 hover:text-white"
-                          title="تعديل النص"
-                        >
-                          <Pencil size={18} strokeWidth={1.5} />
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            e.preventDefault();
-                            navigator.clipboard.writeText(item.text);
+                            if (item.text.startsWith('data:image/')) {
+                                handleCopy(item.text, item.id);
+                            } else {
+                                navigator.clipboard.writeText(item.text);
+                            }
                             setShareModalText(item.text);
                           }}
-                          className="p-1.5 md:opacity-0 md:group-hover:opacity-100 transition-opacity bg-black/40 hover:bg-black/80 rounded-full text-gray-400 hover:text-white"
+                          className="p-1.5 md:opacity-0 md:group-hover:opacity-100 transition-opacity bg-transparent text-gray-400 hover:text-white"
                           title="مشاركة"
                         >
                           <Share2 size={18} strokeWidth={1.5} />
                         </button>
                         <button
                           onClick={(e) => handleCopy(item.text, item.id, e)}
-                          className="p-1.5 md:opacity-0 md:group-hover:opacity-100 transition-opacity bg-black/40 hover:bg-black/80 rounded-full text-gray-400 hover:text-white"
+                          className="p-1.5 md:opacity-0 md:group-hover:opacity-100 transition-opacity bg-transparent text-gray-400 hover:text-white"
                           title="نسخ"
                         >
                           {copiedId === item.id ? <Check size={18} strokeWidth={1.5} className="text-green-500" /> : <Copy size={18} strokeWidth={1.5} />}
                         </button>
                       </div>
                     )}
-                    {displayText}
-                    {isLong && (
+                    {item.text.startsWith('data:image/') ? (
+                      <div className="w-full flex items-center justify-center">
+                        <img src={item.text} alt="Image content" className="w-full h-auto object-contain rounded-lg bg-black/20" />
+                      </div>
+                    ) : (
+                      <>{displayText}</>
+                    )}
+                    {isLong && !item.text.startsWith('data:image/') && (
                       <div className="flex flex-col gap-2 mt-4 items-start w-full">
                         <div className="flex flex-row flex-wrap gap-4 items-center">
                           {hasMore && (
@@ -1567,6 +1753,85 @@ export default function App() {
                 className="w-full cursor-pointer bg-transparent text-red-500 hover:text-red-400 font-medium py-2 transition-all hover:scale-105 active:scale-95 text-base border-none outline-none mt-2"
               >
                 تسجيل الخروج
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAddImagePopup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4" onClick={() => { setShowAddImagePopup(false); setImagePreview(''); }}>
+          <div 
+             className="bg-[#111] border border-white/10 p-6 rounded-3xl flex flex-col gap-4 w-full max-w-xl shadow-[0_0_40px_rgba(0,0,0,0.8)] relative"
+             onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex justify-between items-center w-full pb-1" dir="rtl">
+              <div className="text-xl text-gray-300 font-medium">إضافة صورة</div>
+              <button 
+                onClick={() => { setShowAddImagePopup(false); setImagePreview(''); }}
+                className="text-gray-500 hover:text-white transition-colors cursor-pointer text-base bg-transparent border-none outline-none"
+              >
+                إلغاء
+              </button>
+            </div>
+            
+            <div 
+              className="w-full h-64 bg-white/5 border border-dashed border-white/20 hover:border-white/40 rounded-2xl flex flex-col items-center justify-center transition-colors relative overflow-hidden"
+              onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+              onDrop={(e) => {
+                e.preventDefault(); e.stopPropagation();
+                if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                  handleImageFile(e.dataTransfer.files[0]);
+                }
+              }}
+            >
+              {imagePreview ? (
+                <>
+                  <img src={imagePreview} alt="Preview" className="w-full h-full object-contain" />
+                  <button 
+                    onClick={() => setImagePreview('')}
+                    className="absolute top-2 right-2 p-1.5 bg-black/60 hover:bg-black text-white rounded-full transition-colors"
+                  >
+                    <X size={16} />
+                  </button>
+                </>
+              ) : (
+                <>
+                  <input 
+                    type="file" 
+                    accept="image/*" 
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                    onChange={(e) => {
+                      if (e.target.files && e.target.files[0]) {
+                        handleImageFile(e.target.files[0]);
+                      }
+                    }}
+                  />
+                  <UploadCloud size={40} strokeWidth={1} className="text-gray-400 mb-2" />
+                  <span className="text-gray-400 font-light">مرفق صورة أو اسحبها هنا</span>
+                </>
+              )}
+            </div>
+            
+            <div className="flex justify-end w-full mt-2">
+              <button 
+                onClick={() => {
+                  if (!imagePreview) return;
+                  const newItem: TextItem = {
+                    id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(),
+                    userId: currentUserId,
+                    text: imagePreview,
+                    timestamp: Date.now()
+                  };
+                  setTexts((prev) => [newItem, ...prev]);
+                  saveTextToDB(newItem).catch(e => console.error(e));
+                  setShowAddImagePopup(false);
+                  setImagePreview('');
+                }} 
+                disabled={!imagePreview}
+                className={`w-32 py-2 rounded-full font-medium transition-all text-lg ${imagePreview ? 'bg-white text-black hover:bg-gray-200 cursor-pointer hover:scale-105 active:scale-95 shadow-[0_0_15px_rgba(255,255,255,0.2)]' : 'bg-white/20 text-gray-500 cursor-not-allowed'}`}
+              >
+                إضافة
               </button>
             </div>
           </div>
@@ -1936,8 +2201,75 @@ export default function App() {
         </div>
       )}
 
+      {viewedItem && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/80 backdrop-blur-md px-4" onClick={() => setViewedItem(null)}>
+          <div 
+             className="relative flex flex-col items-center justify-center max-w-4xl max-h-[90vh] w-full shadow-[0_0_50px_rgba(0,0,0,1)] rounded-3xl"
+             onClick={(e) => e.stopPropagation()}
+          >
+             <button 
+                  onClick={() => setViewedItem(null)}
+                  className="absolute -top-10 left-0 md:-top-8 md:-left-8 p-2 bg-transparent text-white hover:text-white/70 transition-colors cursor-pointer z-10"
+             >
+                  <X size={28} strokeWidth={1.5} />
+             </button>
+             <div className="w-full max-h-[75vh] bg-[#111] border border-white/10 rounded-3xl overflow-hidden relative flex flex-col">
+                 <div className="w-full overflow-y-auto custom-scrollbar p-6 md:p-10">
+                     {viewedItem.text.startsWith('data:image/') ? (
+                         <img src={viewedItem.text} alt="عرض الصورة" className="w-full h-auto max-h-[70vh] object-contain rounded-xl" />
+                     ) : (
+                         <div className="text-white whitespace-pre-wrap text-[18px] md:text-[22px] leading-relaxed w-full break-words text-right" dir="auto">
+                             {viewedItem.text}
+                         </div>
+                     )}
+                 </div>
+             </div>
+             
+             <div className="mt-4 flex items-center justify-center gap-6 bg-black/80 backdrop-blur-md px-6 py-3 rounded-full border border-white/10 shadow-lg shrink-0">
+                 <button 
+                     onClick={(e) => handleCopy(viewedItem.text, viewedItem.id, e)} 
+                     className="text-gray-300 hover:text-white transition-colors flex items-center gap-2 cursor-pointer bg-transparent border-none outline-none"
+                 >
+                     {copiedId === viewedItem.id ? <Check size={20} className="text-green-500" /> : <Copy size={20} />}
+                     <span className="text-sm font-medium">نسخ</span>
+                 </button>
+                 <div className="w-[1px] h-5 bg-white/20"></div>
+                 <button 
+                     onClick={(e) => {
+                         if (viewedItem.text.startsWith('data:image/')) {
+                             handleCopy(viewedItem.text, viewedItem.id);
+                         } else {
+                             navigator.clipboard.writeText(viewedItem.text);
+                         }
+                         setShareModalText(viewedItem.text);
+                     }} 
+                     className="text-gray-300 hover:text-white transition-colors flex items-center gap-2 cursor-pointer bg-transparent border-none outline-none"
+                 >
+                     <Share2 size={20} />
+                     <span className="text-sm font-medium">مشاركة</span>
+                 </button>
+                 <div className="w-[1px] h-5 bg-white/20"></div>
+                 <button 
+                     onClick={(e) => {
+                         const currentItem = texts.find(t => t.id === viewedItem.id) || viewedItem;
+                         const updatedItem = { ...currentItem, starred: !currentItem.starred };
+                         setTexts(prev => prev.map(t => t.id === updatedItem.id ? updatedItem : t));
+                         setViewedItem(updatedItem);
+                         saveTextToDB(updatedItem, true).catch(console.error);
+                     }} 
+                     className={`transition-colors flex items-center gap-2 outline-none border-none bg-transparent cursor-pointer ${texts.find(t => t.id === viewedItem.id)?.starred || viewedItem.starred ? 'text-yellow-500 hover:text-yellow-400' : 'text-gray-300 hover:text-white'}`}
+                     title={(texts.find(t => t.id === viewedItem.id)?.starred || viewedItem.starred) ? "إزالة التمييز" : "تثبيت كمفضلة"}
+                 >
+                     <Star size={20} className={(texts.find(t => t.id === viewedItem.id)?.starred || viewedItem.starred) ? "fill-yellow-500" : ""} />
+                     <span className="text-sm font-medium">تمييز</span>
+                 </button>
+             </div>
+          </div>
+        </div>
+      )}
+
       {shareModalText && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 backdrop-blur-sm px-4" onClick={() => setShareModalText(null)}>
+        <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/60 backdrop-blur-sm px-4" onClick={() => setShareModalText(null)}>
           <div 
             className="bg-[#111] border border-white/10 rounded-[32px] flex flex-col w-full max-w-md shadow-[0_0_40px_rgba(0,0,0,0.8)] relative max-h-[80vh] overflow-hidden"
             onClick={(e) => e.stopPropagation()}
@@ -1954,16 +2286,27 @@ export default function App() {
             </div>
             <div className="p-6 overflow-y-auto custom-scrollbar flex-1">
               <div className="text-sm text-green-400 mb-6 font-medium text-center bg-green-400/10 py-3 rounded-xl">
-                تم نسخ النص بنجاح!
+                {shareModalText?.startsWith('data:image/') ? 'تم نسخ الصورة بنجاح!' : 'تم نسخ النص بنجاح!'}
               </div>
 
-              {navigator.share && (
+              {navigator.share && typeof navigator.share === 'function' && (
                 <button
                   onClick={async () => {
                     try {
-                      await navigator.share({
-                        text: shareModalText || '',
-                      });
+                      if (shareModalText?.startsWith('data:image/')) {
+                          const res = await fetch(shareModalText);
+                          const blob = await res.blob();
+                          const file = new File([blob], 'shared_image.png', { type: blob.type });
+                          if (navigator.canShare && navigator.canShare({ files: [file] })) {
+                              await navigator.share({ files: [file] });
+                          } else {
+                              alert('جهازك لا يدعم مشاركة الملفات مباشرة.');
+                          }
+                      } else {
+                          await navigator.share({
+                            text: shareModalText || '',
+                          });
+                      }
                     } catch (err) {
                       console.log('Error sharing:', err);
                     }
@@ -1985,9 +2328,14 @@ export default function App() {
                     href={href}
                     target="_blank"
                     rel="noopener noreferrer"
-                    onClick={() => {
-                      navigator.clipboard.writeText(shareModalText || '');
-                      alert('تم نسخ النص بنجاح! يتم الآن فتح المنصة لتتمكن من لصقه.');
+                    onClick={(e) => {
+                      if (shareModalText?.startsWith('data:image/')) {
+                          // Already copied when share modal opened!
+                          alert('تم نسخ الصورة بنجاح! يتم الآن فتح المنصة لتتمكن من لصقها.');
+                      } else {
+                          navigator.clipboard.writeText(shareModalText || '');
+                          alert('تم نسخ النص بنجاح! يتم الآن فتح المنصة لتتمكن من لصقه.');
+                      }
                       setTimeout(() => setShareModalText(null), 100);
                     }}
                     className="flex items-center justify-start gap-3 p-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 text-white transition-colors cursor-pointer"
