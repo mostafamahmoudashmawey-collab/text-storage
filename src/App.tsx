@@ -45,27 +45,14 @@ const processQueue = async () => {
     if (isProcessingQueue || uploadQueue.length === 0) return;
     isProcessingQueue = true;
     
-    // التاكد من كم عدد الصور
-    const total = uploadQueue.length;
-    let batchSize = 1;
+    const batch = uploadQueue.splice(0, uploadQueue.length);
 
-    // اذا العدد زوجي يتم ارسال نصفها كدفعه، واذا العدد فردي ترسل ثلثها
-    if (total % 2 === 0) {
-      batchSize = Math.max(1, Math.ceil(total / 2)); 
-    } else {
-      batchSize = Math.max(1, Math.ceil(total / 3)); 
-    }
-
-    while (uploadQueue.length > 0) {
-      const batch = uploadQueue.splice(0, batchSize);
-
-      // ارسال الدفعة بأسلوب يمنع ضياع الصور من جوجل
-      await Promise.all(batch.map(async (task, index) => {
-        // فارق زمني 150 جزء من الثانية بين كل صورة والأخرى داخل نفس الدفعة، كافي جداً لمنع تصادم البيانات في جوجل
-        await new Promise(r => setTimeout(r, index * 150));
-        
-        try {
-          const result = await task.fn();
+    await Promise.all(batch.map(async (task, index) => {
+      // فارق زمني بسيط جدا لمنع ضياع الصور من جوجل
+      await new Promise(r => setTimeout(r, index * 100));
+      
+      try {
+        const result = await task.fn();
           task.resolve(result);
         } catch (e) {
           if (task.retryCount < 20) {
@@ -81,12 +68,6 @@ const processQueue = async () => {
           }
         }
       }));
-
-      // انتظار ثانية واحدة قبل إرسال النصف أو الثلث التالي
-      if (uploadQueue.length > 0) {
-        await new Promise(r => setTimeout(r, 1000));
-      }
-    }
 
     isProcessingQueue = false;
   }, 100); // تجميع كافة الطلبات
@@ -1144,12 +1125,15 @@ export default function App() {
   };
 
   const handleImageFiles = (files: File[]) => {
-    // Process files in massive chunks for rocket speed
+    // الحد الأقصى 10 صور فقط
+    const targetFiles = files.slice(0, 10 - imagePreviews.length);
+    if (targetFiles.length === 0) return;
+
     let processed = 0;
-    const batchSize = 100;
+    const batchSize = 10;
     
     const processBatch = () => {
-      const target = files.slice(processed, processed + batchSize);
+      const target = targetFiles.slice(processed, processed + batchSize);
       if (target.length === 0) return;
 
       Promise.all(target.map(file => {
@@ -1171,7 +1155,7 @@ export default function App() {
         const validResults = results.filter(r => r !== '');
         setImagePreviews(prev => [...prev, ...validResults]);
         processed += batchSize;
-        if (processed < files.length) {
+        if (processed < targetFiles.length) {
           setTimeout(processBatch, 0);
         }
       });
