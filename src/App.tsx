@@ -45,21 +45,24 @@ const processQueue = async () => {
     if (isProcessingQueue || uploadQueue.length === 0) return;
     isProcessingQueue = true;
     
-    // First, a condition to know how many items are waiting
+    // أولا: التاكد من كم عدد الصور
     const total = uploadQueue.length;
     let batchSize = 1;
+
+    // اذا العدد زوجي يتم ارسال نصفها كدفعه، واذا العدد فردي ترسل ثلثها
     if (total % 2 === 0) {
-      batchSize = Math.max(1, total / 2); // Half
+      batchSize = Math.max(1, Math.ceil(total / 2)); // نصفها
     } else {
-      batchSize = Math.max(1, Math.ceil(total / 3)); // Third
+      batchSize = Math.max(1, Math.ceil(total / 3)); // ثلثها
     }
 
     while (uploadQueue.length > 0) {
+      // اقتطاع الدفعة الحالية بناءً على الشرط (النصف أو الثلث)
       const batch = uploadQueue.splice(0, batchSize);
 
-      await Promise.all(batch.map(async (task, index) => {
-        // Very slight inner stagger
-        await new Promise(r => setTimeout(r, index * 100)); // increased stagger to 100ms
+      // ارسال الدفعة الحالية
+      for (let i = 0; i < batch.length; i++) {
+        const task = batch[i];
         try {
           const result = await task.fn();
           task.resolve(result);
@@ -76,14 +79,18 @@ const processQueue = async () => {
             task.reject(e);
           }
         }
-      }));
+        // تأخير بسيط جدا بين كل صورة في نفس الدفعة لكي لا يتم حظر الطلبات من جوجل ولمنع نقص أي صورة
+        await new Promise(r => setTimeout(r, 400));
+      }
 
-      // Wait between batches to prevent Google Sheets from dropping rows
-      if (uploadQueue.length > 0) await new Promise(r => setTimeout(r, 1500));
+      // الانتظار قبل الدفعة التالية (النصف الآخر أو الثلث التالى)
+      if (uploadQueue.length > 0) {
+        await new Promise(r => setTimeout(r, 2000));
+      }
     }
 
     isProcessingQueue = false;
-  }, 500);
+  }, 500); // تجميع كافة الصور خلال نصف ثانية قبل بدء الارسال
 };
 
 const queueUpload = (payload: any) => {
