@@ -35,7 +35,7 @@ const appendToGoogleSheet = async (payload: any) => {
 // Optimized concurrent upload queue with auto-retry and smarter throttling
 const uploadQueue: {fn: () => Promise<any>, resolve: (v: any) => void, reject: (e: any) => void, retryCount: number, payload: any}[] = [];
 let isProcessingQueue = false;
-const MAX_CONCURRENT_UPLOADS = 12; // Balanced for maximum GAS + Browser throughput without triggering drops
+const MAX_CONCURRENT_UPLOADS = 5; // Safe concurrency to prevent Google Apps Script drop-offs and locks
 
 const processQueue = async () => {
   if (isProcessingQueue || uploadQueue.length === 0) return;
@@ -49,20 +49,22 @@ const processQueue = async () => {
         const result = await task.fn();
         task.resolve(result);
       } catch (e) {
-        if (task.retryCount < 5) {
+        if (task.retryCount < 20) {
           task.retryCount++;
           // Re-queue with a tiny backoff
           setTimeout(() => {
-            uploadQueue.push(task);
+            if (!uploadQueue.find(t => t.payload.id === task.payload.id && t.payload.action === task.payload.action)) {
+               uploadQueue.push(task);
+            }
             processQueue();
-          }, 500 * task.retryCount);
+          }, 1000 * task.retryCount);
         } else {
           task.reject(e);
         }
       }
     }));
     // Small breath for the UI thread
-    if (uploadQueue.length > 0) await new Promise(r => setTimeout(r, 10));
+    if (uploadQueue.length > 0) await new Promise(r => setTimeout(r, 100));
   }
   
   isProcessingQueue = false;
@@ -70,6 +72,12 @@ const processQueue = async () => {
 
 const queueUpload = (payload: any) => {
   return new Promise((resolve, reject) => {
+    // Prevent flooding the queue with identical requests
+    const exists = uploadQueue.find(t => t.payload.id === payload.id && t.payload.action === payload.action);
+    if (exists) {
+      resolve(true); 
+      return;
+    }
     const task = { 
       fn: () => appendToGoogleSheet(payload), 
       resolve, 
@@ -1069,7 +1077,7 @@ export default function App() {
       // Trigger an immediate sync upon entering
       fetchAndSync();
 
-      // Retry pending uploads locally every 10 seconds as long as we are here
+      // Retry pending uploads locally every 30 seconds as long as we are here
       const retryInterval = setInterval(async () => {
         const localTexts = await getTextsFromLocalDB(currentUserId);
         const pending = localTexts.filter(t => t.synced === false);
@@ -1080,7 +1088,7 @@ export default function App() {
             saveTextToDB(item, false).catch(() => {});
           });
         }
-      }, 10000);
+      }, 30000);
       
       return () => {
         if (syncInterval) clearInterval(syncInterval);
