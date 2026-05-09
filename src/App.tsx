@@ -16,10 +16,10 @@ const fetchAllGoogleSheetRows = async () => {
   return data;
 };
 
-// Append a row to the Google Sheet
-const appendToGoogleSheet = async (payload: any) => {
+// Append a row to the Google Sheet with automatic retries for maximum reliability
+const appendToGoogleSheet = async (payload: any, retryCount = 0): Promise<any> => {
   try {
-    const res = await fetch(GOOGLE_SHEETS_URL, {
+    await fetch(GOOGLE_SHEETS_URL, {
       method: "POST",
       body: JSON.stringify(payload),
       headers: { "Content-Type": "text/plain;charset=utf-8" },
@@ -27,129 +27,19 @@ const appendToGoogleSheet = async (payload: any) => {
     });
     return {};
   } catch (error) {
-    console.error("Google Sheets save error", error);
+    if (retryCount < 20) {
+      // Exponential backoff
+      await new Promise(r => setTimeout(r, Math.min(1000 * retryCount, 10000)));
+      return appendToGoogleSheet(payload, retryCount + 1);
+    }
+    console.error("Google Sheets save error after retries", error);
     throw error;
   }
 };
 
-// Optimized sequential upload queue to avoid Google Sheets appendRow conflicts but extremely fast
-const uploadQueue: {fn: () => Promise<any>, resolve: (v: any) => void, reject: (e: any) => void, retryCount: number, payload: any}[] = [];
-let isProcessingQueue = false;
-let queueTimeout: ReturnType<typeof setTimeout> | null = null;
-
-const processQueue = async () => {
-  if (isProcessingQueue || uploadQueue.length === 0) return;
-  
-  if (queueTimeout) clearTimeout(queueTimeout);
-  queueTimeout = setTimeout(async () => {
-    if (isProcessingQueue || uploadQueue.length === 0) return;
-    isProcessingQueue = true;
-    
-    const batch = uploadQueue.splice(0, uploadQueue.length);
-
-    await Promise.all(batch.map(async (task, index) => {
-      // فارق زمني بسيط جدا لمنع ضياع الصور من جوجل
-      await new Promise(r => setTimeout(r, index * 100));
-      
-      try {
-        const result = await task.fn();
-          task.resolve(result);
-        } catch (e) {
-          if (task.retryCount < 20) {
-            task.retryCount++;
-            setTimeout(() => {
-              if (!uploadQueue.find(t => t.payload.id === task.payload.id && t.payload.action === task.payload.action)) {
-                 uploadQueue.push(task);
-              }
-              processQueue();
-            }, 1000 * task.retryCount);
-          } else {
-            task.reject(e);
-          }
-        }
-      }));
-
-    isProcessingQueue = false;
-  }, 100); // تجميع كافة الطلبات
-};
-
-const queueUpload = (payload: any) => {
-  return new Promise((resolve, reject) => {
-    // Prevent flooding the queue with identical requests
-    const exists = uploadQueue.find(t => t.payload.id === payload.id && t.payload.action === payload.action);
-    if (exists) {
-      resolve(true); 
-      return;
-    }
-    const task = { 
-      fn: () => appendToGoogleSheet(payload), 
-      resolve, 
-      reject, 
-      retryCount: 0,
-      payload 
-    };
-    uploadQueue.push(task);
-    processQueue();
-  });
-};
-
-// Compress image to strictly fit within Google Sheets limits
+// Keep original image quality
 const compressImage = (dataUrl: string): Promise<string> => {
-  return new Promise((resolve) => {
-    if (!dataUrl.startsWith('data:image/')) {
-        resolve(dataUrl);
-        return;
-    }
-    const img = new Image();
-    img.src = dataUrl;
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      let MAX_WIDTH = 300; // Extremely aggressive start for tiny base64
-      let width = img.width;
-      let height = img.height;
-      if (width > MAX_WIDTH) {
-        height = (MAX_WIDTH / width) * height;
-        width = MAX_WIDTH;
-      }
-      
-      let quality = 0.5;
-      let result = '';
-      
-      const compress = () => {
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        ctx?.clearRect(0, 0, width, height);
-        ctx?.drawImage(img, 0, 0, width, height);
-        result = canvas.toDataURL('image/jpeg', quality);
-        
-        // Target an incredibly safe and ultra small size for "رهيب" compression requested
-        if (result.length > 15000) {
-          if (quality > 0.1) {
-            quality -= 0.15;
-            setTimeout(compress, 0); // Yield to main thread to prevent UI freezing
-          } else if (MAX_WIDTH > 80) {
-             MAX_WIDTH = Math.floor(MAX_WIDTH * 0.6);
-             width = img.width;
-             height = img.height;
-             if (width > MAX_WIDTH) {
-               height = (MAX_WIDTH / width) * height;
-               width = MAX_WIDTH;
-             }
-             quality = 0.4;
-             setTimeout(compress, 0); // Yield to main thread
-          } else {
-             resolve(result);
-          }
-        } else {
-          resolve(result);
-        }
-      };
-      
-      compress();
-    };
-    img.onerror = () => resolve(dataUrl);
-  });
+  return Promise.resolve(dataUrl);
 };
 
 interface TextItem {
@@ -212,8 +102,8 @@ const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
   notifyTabSync(textItem.userId);
 
   try {
-    // Priority Queue Upload for maximum speed and zero drops
-    await queueUpload({
+    // Priority direct Upload for maximum speed and zero drops
+    await appendToGoogleSheet({
       action: isUpdate ? "UPDATE" : "ADD",
       id: textItem.id,
       userid: textItem.userId,
@@ -1137,8 +1027,8 @@ export default function App() {
   };
 
   const handleImageFiles = (files: File[]) => {
-    // الحد الأقصى 10 صور فقط
-    const targetFiles = files.slice(0, 10 - imagePreviews.length);
+    // الحد الأقصى 3 صور فقط
+    const targetFiles = files.slice(0, 3 - imagePreviews.length);
     if (targetFiles.length === 0) return;
 
     let processed = 0;
@@ -1991,7 +1881,7 @@ export default function App() {
                 </div>
               ))}
               
-              {imagePreviews.length > 0 && imagePreviews.length < 10 && (
+              {imagePreviews.length > 0 && imagePreviews.length < 3 && (
                 <div 
                   className="aspect-square w-full bg-white/5 hover:bg-white/10 border border-dashed border-white/20 hover:border-white/40 rounded-xl flex flex-col items-center justify-center transition-all cursor-pointer group"
                   onClick={() => {
@@ -2025,24 +1915,41 @@ export default function App() {
                 onClick={async () => {
                   if (imagePreviews.length === 0) return;
                   
+                  // Show loading feedback
+                  const btn = document.getElementById('add-all-btn') as HTMLButtonElement;
+                  if (btn) {
+                    btn.disabled = true;
+                    btn.textContent = 'جاري الرفع...';
+                  }
+
                   const newItems: TextItem[] = imagePreviews.map((preview, i) => ({
                     id: generateTextId() + "_" + i,
                     userId: currentUserId,
                     text: preview,
-                    timestamp: Date.now() + i
+                    timestamp: Date.now() + i,
+                    synced: false // Initially not synced, will mark synced if successful
                   }));
                   
                   setTexts((prev) => [...newItems.reverse(), ...prev]);
                   
-                  // Fire individual uploads in parallel without blocking the UI
-                  newItems.forEach(item => {
-                    saveTextToDB(item).catch(e => console.error("Background upload error:", e));
-                  });
-                  
-                  setImageCooldownRemaining(15);
                   setShowAddImagePopup(false);
                   setImagePreviews([]);
+                  
+                  // Parallel, super-fast individual uploads
+                  (async () => {
+                    await Promise.all(newItems.map(async (item) => {
+                      try {
+                        await saveTextToDB(item);
+                        // Mark as synced if successful
+                        setTexts(prev => prev.map(t => t.id === item.id ? { ...t, synced: true } : t));
+                      } catch (e) {
+                         console.error("Failed to upload image item", e);
+                      }
+                    }));
+                    setImageCooldownRemaining(15);
+                  })();
                 }} 
+                id="add-all-btn"
                 disabled={imagePreviews.length === 0}
                 className={`px-8 py-2 rounded-full font-medium transition-all text-lg ${imagePreviews.length > 0 ? 'bg-white text-black hover:bg-gray-200 cursor-pointer hover:scale-105 active:scale-95 shadow-[0_0_15px_rgba(255,255,255,0.2)]' : 'bg-white/20 text-gray-500 cursor-not-allowed'}`}
               >
