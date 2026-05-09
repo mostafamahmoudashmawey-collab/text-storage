@@ -45,10 +45,11 @@ const processQueue = async () => {
     const task = uploadQueue.shift();
     if (!task) break;
 
-    try {
-      const result = await task.fn();
-      task.resolve(result);
-    } catch (e) {
+    // Fire the fetch request without blocking the loop on network roundtrip. 
+    // This makes it instantly processed in the UI while sending safely.
+    task.fn().then(result => {
+        task.resolve(result);
+    }).catch(e => {
       if (task.retryCount < 20) {
         task.retryCount++;
         // Re-queue with a backoff
@@ -61,9 +62,10 @@ const processQueue = async () => {
       } else {
         task.reject(e);
       }
-    }
-    // Tiny breath for UI, minimal delay to keep it lightning fast
-    if (uploadQueue.length > 0) await new Promise(r => setTimeout(r, 10));
+    });
+
+    // Extremely tiny breath to space out the Google Apps Script calls (prevents lock contention) without slowing down the user.
+    if (uploadQueue.length > 0) await new Promise(r => setTimeout(r, 150));
   }
   
   isProcessingQueue = false;
