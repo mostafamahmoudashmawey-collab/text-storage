@@ -35,37 +35,54 @@ const appendToGoogleSheet = async (payload: any) => {
 // Optimized sequential upload queue to avoid Google Sheets appendRow conflicts but extremely fast
 const uploadQueue: {fn: () => Promise<any>, resolve: (v: any) => void, reject: (e: any) => void, retryCount: number, payload: any}[] = [];
 let isProcessingQueue = false;
+let queueTimeout: ReturnType<typeof setTimeout> | null = null;
 
 const processQueue = async () => {
   if (isProcessingQueue || uploadQueue.length === 0) return;
-  isProcessingQueue = true;
   
-  while (uploadQueue.length > 0) {
-    const task = uploadQueue.shift();
-    if (!task) break;
+  if (queueTimeout) clearTimeout(queueTimeout);
+  queueTimeout = setTimeout(async () => {
+    if (isProcessingQueue || uploadQueue.length === 0) return;
+    isProcessingQueue = true;
+    
+    const total = uploadQueue.length;
+    let batchSize = 1;
+    if (total % 2 === 0) {
+      batchSize = Math.max(1, total / 2); // Half then half
+    } else {
+      batchSize = Math.max(1, Math.ceil(total / 3)); // Third then third then third
+    }
 
-    // Fire and forget (don't await) to achieve rocket speed
-    task.fn().then(result => {
-        task.resolve(result);
-    }).catch(e => {
-      if (task.retryCount < 20) {
-        task.retryCount++;
-        setTimeout(() => {
-          if (!uploadQueue.find(t => t.payload.id === task.payload.id && t.payload.action === task.payload.action)) {
-             uploadQueue.push(task);
+    while (uploadQueue.length > 0) {
+      const batch = uploadQueue.splice(0, batchSize);
+
+      await Promise.all(batch.map(async (task, index) => {
+        // Very slight inner stagger to avoid absolute collision on Apps Script but keep it super fast
+        await new Promise(r => setTimeout(r, index * 10));
+        try {
+          const result = await task.fn();
+          task.resolve(result);
+        } catch (e) {
+          if (task.retryCount < 20) {
+            task.retryCount++;
+            setTimeout(() => {
+              if (!uploadQueue.find(t => t.payload.id === task.payload.id && t.payload.action === task.payload.action)) {
+                 uploadQueue.push(task);
+              }
+              processQueue();
+            }, 1000 * task.retryCount);
+          } else {
+            task.reject(e);
           }
-          processQueue();
-        }, 1000 * task.retryCount);
-      } else {
-        task.reject(e);
-      }
-    });
+        }
+      }));
 
-    // 15ms stagger: enough to prevent Google Apps Script lock dropping, but feels like an instant single batch to the user.
-    if (uploadQueue.length > 0) await new Promise(r => setTimeout(r, 15));
-  }
+      // No delay between consecutive batches as requested by user
+      if (uploadQueue.length > 0) await new Promise(r => setTimeout(r, 0));
+    }
 
-  isProcessingQueue = false;
+    isProcessingQueue = false;
+  }, 50);
 };
 
 const queueUpload = (payload: any) => {
