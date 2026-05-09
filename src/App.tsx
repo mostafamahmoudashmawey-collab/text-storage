@@ -624,6 +624,13 @@ export default function App() {
       return b.timestamp - a.timestamp;
     });
   }, [texts]);
+  const recentTextAdditionsCount = useMemo(() => {
+    return texts.filter(t => !t.text.startsWith('data:image/') && Date.now() - t.timestamp < 24 * 60 * 60 * 1000).length;
+  }, [texts]);
+  
+  const recentImageAdditionsCount = useMemo(() => {
+    return texts.filter(t => t.text.startsWith('data:image/') && Date.now() - t.timestamp < 24 * 60 * 60 * 1000).length;
+  }, [texts]);
   const [expandedLengths, setExpandedLengths] = useState<Record<string, number>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [shareModalText, setShareModalText] = useState<string | null>(null);
@@ -1054,22 +1061,29 @@ export default function App() {
       const target = files.slice(processed, processed + batchSize);
       if (target.length === 0) return;
 
-      target.forEach(file => {
-        if (!file.type.startsWith('image/')) return;
-        const reader = new FileReader();
-        reader.readAsDataURL(file);
-        reader.onload = async (e) => {
-          const dataUrl = e.target?.result as string;
-          const compressed = await compressImage(dataUrl);
-          setImagePreviews(prev => [...prev, compressed]);
-        };
+      Promise.all(target.map(file => {
+        return new Promise<string>((resolve) => {
+          if (!file.type.startsWith('image/')) {
+            resolve('');
+            return;
+          }
+          const reader = new FileReader();
+          reader.readAsDataURL(file);
+          reader.onload = async (e) => {
+            const dataUrl = e.target?.result as string;
+            const compressed = await compressImage(dataUrl);
+            resolve(compressed);
+          };
+          reader.onerror = () => resolve('');
+        });
+      })).then(results => {
+        const validResults = results.filter(r => r !== '');
+        setImagePreviews(prev => [...prev, ...validResults]);
+        processed += batchSize;
+        if (processed < files.length) {
+          setTimeout(processBatch, 0);
+        }
       });
-
-      processed += batchSize;
-      if (processed < files.length) {
-        // Zero delay for processing
-        setTimeout(processBatch, 0);
-      }
     };
 
     processBatch();
@@ -1126,6 +1140,9 @@ export default function App() {
               </>
             )}
             <div className="flex items-center gap-1 pointer-events-auto">
+              <span className="text-white/30 text-base font-medium px-1" title="عدد النصوص المضافة اليوم">
+                {recentTextAdditionsCount > 0 ? recentTextAdditionsCount : ''}
+              </span>
               <button 
                 onClick={() => { setShowAddTextPopup(true); setNewText(''); }}
                 className="p-2 flex items-center justify-center transition-all outline-none cursor-pointer text-gray-400 hover:text-white hover:scale-110 active:scale-95"
@@ -1133,6 +1150,9 @@ export default function App() {
               >
                 <Plus size={28} strokeWidth={1.5} />
               </button>
+              <span className="text-white/30 text-base font-medium pl-1 pr-3" title="عدد الصور المضافة اليوم">
+                {recentImageAdditionsCount > 0 ? recentImageAdditionsCount : ''}
+              </span>
               <button 
                 onClick={() => { setShowAddImagePopup(true); setImagePreviews([]); }}
                 className="p-2 flex items-center justify-center transition-all outline-none cursor-pointer text-gray-400 hover:text-white hover:scale-110 active:scale-95"
