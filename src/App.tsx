@@ -1929,7 +1929,7 @@ export default function App() {
             </div>
             
             <div 
-              className={`w-full min-h-[16rem] bg-white/5 border border-dashed border-white/20 hover:border-white/40 rounded-2xl transition-colors relative overflow-y-auto p-4 ${imagePreviews.length === 0 ? 'flex flex-col items-center justify-center' : 'grid grid-cols-2 sm:grid-cols-3 gap-3'}`}
+              className={`w-full min-h-[16rem] bg-white/5 border border-dashed border-white/20 hover:border-white/40 rounded-2xl transition-colors relative p-4 ${imagePreviews.length === 0 ? 'flex flex-col items-center justify-center overflow-y-auto' : 'grid grid-cols-2 md:grid-cols-5 gap-4 overflow-y-auto items-start'}`}
               onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
               onDrop={(e) => {
                 e.preventDefault(); e.stopPropagation();
@@ -1951,23 +1951,23 @@ export default function App() {
               />
               
               {imagePreviews.map((preview, index) => (
-                <div key={index} className="relative aspect-square group bg-white/5 rounded-xl overflow-hidden border border-white/10">
-                  <img src={preview} alt="Preview" className="w-full h-full object-cover" />
+                <div key={index} className="relative aspect-square w-full group bg-black/20 rounded-xl overflow-hidden border border-white/10 flex items-center justify-center">
+                  <img src={preview} alt="Preview" className="max-w-full max-h-full object-contain" />
                   <button 
                     onClick={(e) => {
                         e.stopPropagation();
                         setImagePreviews(prev => prev.filter((_, i) => i !== index));
                     }}
-                    className="absolute top-1 right-1 p-1 bg-black/60 hover:bg-black text-white rounded-full transition-colors opacity-0 group-hover:opacity-100"
+                    className="absolute top-2 right-2 p-1.5 bg-black/60 hover:bg-black text-white rounded-full transition-colors opacity-0 group-hover:opacity-100 z-10"
                   >
-                    <X size={14} />
+                    <X size={16} />
                   </button>
                 </div>
               ))}
               
               {imagePreviews.length > 0 && imagePreviews.length < 10 && (
                 <div 
-                  className="aspect-square bg-white/5 hover:bg-white/10 border border-dashed border-white/20 hover:border-white/40 rounded-xl flex flex-col items-center justify-center transition-all cursor-pointer group"
+                  className="aspect-square w-full bg-white/5 hover:bg-white/10 border border-dashed border-white/20 hover:border-white/40 rounded-xl flex flex-col items-center justify-center transition-all cursor-pointer group"
                   onClick={() => {
                     const input = document.createElement('input');
                     input.type = 'file';
