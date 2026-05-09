@@ -41,17 +41,15 @@ const processQueue = async () => {
   isProcessingQueue = true;
   
   while (uploadQueue.length > 0) {
-    // Process strictly one by one (sequentially) for safety and accuracy of pending count
     const task = uploadQueue.shift();
     if (!task) break;
 
-    try {
-      const result = await task.fn();
-      task.resolve(result);
-    } catch (e) {
+    // Fire and forget (don't await) to achieve rocket speed
+    task.fn().then(result => {
+        task.resolve(result);
+    }).catch(e => {
       if (task.retryCount < 20) {
         task.retryCount++;
-        // Re-queue with a backoff
         setTimeout(() => {
           if (!uploadQueue.find(t => t.payload.id === task.payload.id && t.payload.action === task.payload.action)) {
              uploadQueue.push(task);
@@ -61,12 +59,12 @@ const processQueue = async () => {
       } else {
         task.reject(e);
       }
-    }
+    });
 
-    // Zero delay requested between images
-    if (uploadQueue.length > 0) await new Promise(r => setTimeout(r, 0));
+    // 15ms stagger: enough to prevent Google Apps Script lock dropping, but feels like an instant single batch to the user.
+    if (uploadQueue.length > 0) await new Promise(r => setTimeout(r, 15));
   }
-  
+
   isProcessingQueue = false;
 };
 
@@ -124,7 +122,7 @@ const compressImage = (dataUrl: string): Promise<string> => {
         if (result.length > 15000) {
           if (quality > 0.1) {
             quality -= 0.15;
-            compress();
+            setTimeout(compress, 0); // Yield to main thread to prevent UI freezing
           } else if (MAX_WIDTH > 80) {
              MAX_WIDTH = Math.floor(MAX_WIDTH * 0.6);
              width = img.width;
@@ -134,7 +132,7 @@ const compressImage = (dataUrl: string): Promise<string> => {
                width = MAX_WIDTH;
              }
              quality = 0.4;
-             compress();
+             setTimeout(compress, 0); // Yield to main thread
           } else {
              resolve(result);
           }
@@ -230,7 +228,7 @@ const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
         req.onerror = reject;
       });
       // Notify this tab so it updates its texts state
-      window.dispatchEvent(new Event('local_db_updated'));
+      window.dispatchEvent(new CustomEvent('local_item_synced', { detail: textItem.id }));
       // And notify other tabs
       notifyTabSync(textItem.userId);
     } catch (e) {}
@@ -1041,10 +1039,11 @@ export default function App() {
          setTexts(localTexts);
       };
       
-      const onLocalUpdate = () => {
-         fetchFromLocal();
+      const onLocalItemSynced = (e: any) => {
+         const syncedId = e.detail;
+         setTexts(prev => prev.map(t => t.id === syncedId ? { ...t, synced: true } : t));
       };
-      window.addEventListener('local_db_updated', onLocalUpdate);
+      window.addEventListener('local_item_synced', onLocalItemSynced);
 
       let isSyncing = false;
       const fetchAndSync = async () => {
@@ -1107,7 +1106,7 @@ export default function App() {
         if (visibilityHandler) {
           document.removeEventListener('visibilitychange', visibilityHandler);
         }
-        window.removeEventListener('local_db_updated', onLocalUpdate);
+        window.removeEventListener('local_item_synced', onLocalItemSynced);
       };
     }
   }, [currentView, currentUserId]);
