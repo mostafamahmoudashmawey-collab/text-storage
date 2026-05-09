@@ -41,15 +41,14 @@ const processQueue = async () => {
   isProcessingQueue = true;
   
   while (uploadQueue.length > 0) {
-    // Process strictly one by one (sequentially) for safety, but with zero added delay for rocket speed
+    // Process strictly one by one (sequentially) for safety and accuracy of pending count
     const task = uploadQueue.shift();
     if (!task) break;
 
-    // Fire the fetch request without blocking the loop on network roundtrip. 
-    // This makes it instantly processed in the UI while sending safely.
-    task.fn().then(result => {
-        task.resolve(result);
-    }).catch(e => {
+    try {
+      const result = await task.fn();
+      task.resolve(result);
+    } catch (e) {
       if (task.retryCount < 20) {
         task.retryCount++;
         // Re-queue with a backoff
@@ -62,10 +61,10 @@ const processQueue = async () => {
       } else {
         task.reject(e);
       }
-    });
+    }
 
-    // Extremely tiny breath to space out the Google Apps Script calls (prevents lock contention) without slowing down the user.
-    if (uploadQueue.length > 0) await new Promise(r => setTimeout(r, 150));
+    // Zero delay requested between images
+    if (uploadQueue.length > 0) await new Promise(r => setTimeout(r, 0));
   }
   
   isProcessingQueue = false;
@@ -220,6 +219,22 @@ const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
       starred: textItem.starred ? 1 : 0
     });
     
+    // Mark as synced locally so the pending counter drops smoothly one by one
+    try {
+      const localDb = await initLocalDB();
+      await new Promise<void>((resolve, reject) => {
+        const tx = localDb.transaction('texts', 'readwrite');
+        const store = tx.objectStore('texts');
+        const req = store.put({ ...itemToSave, synced: true });
+        req.onsuccess = () => resolve();
+        req.onerror = reject;
+      });
+      // Notify this tab so it updates its texts state
+      window.dispatchEvent(new Event('local_db_updated'));
+      // And notify other tabs
+      notifyTabSync(textItem.userId);
+    } catch (e) {}
+
   } catch (e) {
     console.error("Google Sheets save error", e);
   }
@@ -1026,6 +1041,11 @@ export default function App() {
          setTexts(localTexts);
       };
       
+      const onLocalUpdate = () => {
+         fetchFromLocal();
+      };
+      window.addEventListener('local_db_updated', onLocalUpdate);
+
       let isSyncing = false;
       const fetchAndSync = async () => {
         if (isSyncing) return;
@@ -1087,6 +1107,7 @@ export default function App() {
         if (visibilityHandler) {
           document.removeEventListener('visibilitychange', visibilityHandler);
         }
+        window.removeEventListener('local_db_updated', onLocalUpdate);
       };
     }
   }, [currentView, currentUserId]);
