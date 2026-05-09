@@ -674,6 +674,18 @@ export default function App() {
   const [showAddTextPopup, setShowAddTextPopup] = useState(false);
   const [showAddImagePopup, setShowAddImagePopup] = useState(false);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
+  const [imageCooldownRemaining, setImageCooldownRemaining] = useState(0);
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    if (imageCooldownRemaining > 0) {
+      timer = setTimeout(() => setImageCooldownRemaining(prev => prev - 1), 1000);
+    }
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [imageCooldownRemaining]);
+
   const [showEditTextPopup, setShowEditTextPopup] = useState(false);
   const [editTextItem, setEditTextItem] = useState<TextItem | null>(null);
   const [showNewPassword, setShowNewPassword] = useState(false);
@@ -1215,12 +1227,6 @@ export default function App() {
               </>
             )}
             <div className="flex items-center gap-1 pointer-events-auto">
-              {pendingCount > 0 && (
-                <div className="flex items-center mx-2 gap-2 px-3 py-1 bg-yellow-500/20 text-yellow-500 rounded-full text-sm font-medium animate-pulse" title="يتم الرفع إلى القاعدة الآن... يرجى عدم إغلاق التطبيق">
-                  <span className="w-2 h-2 rounded-full bg-yellow-500"></span>
-                  جاري الرفع ({pendingCount})...
-                </div>
-              )}
               <span className="text-white/30 text-base font-medium px-1" title="عدد النصوص المضافة اليوم">
                 {recentTextAdditionsCount > 0 ? recentTextAdditionsCount : ''}
               </span>
@@ -1235,11 +1241,20 @@ export default function App() {
                 {recentImageAdditionsCount > 0 ? recentImageAdditionsCount : ''}
               </span>
               <button 
-                onClick={() => { setShowAddImagePopup(true); setImagePreviews([]); }}
-                className="p-2 flex items-center justify-center transition-all outline-none cursor-pointer text-gray-400 hover:text-white hover:scale-110 active:scale-95"
-                title="إضافة صورة"
+                onClick={() => {
+                  if (imageCooldownRemaining > 0) return;
+                  setShowAddImagePopup(true); 
+                  setImagePreviews([]); 
+                }}
+                disabled={imageCooldownRemaining > 0}
+                className={`p-2 flex items-center justify-center transition-all outline-none ${imageCooldownRemaining > 0 ? 'text-gray-600 cursor-not-allowed' : 'text-gray-400 hover:text-white hover:scale-110 active:scale-95 cursor-pointer'}`}
+                title={imageCooldownRemaining > 0 ? `انتظر ${imageCooldownRemaining} ثواني` : "إضافة صورة"}
               >
-                <ImageIcon size={26} strokeWidth={1.5} />
+                {imageCooldownRemaining > 0 ? (
+                  <span className="text-sm font-medium w-[26px] h-[26px] flex items-center justify-center bg-white/10 rounded-full">{imageCooldownRemaining}</span>
+                ) : (
+                  <ImageIcon size={26} strokeWidth={1.5} />
+                )}
               </button>
             </div>
           </div>
@@ -1478,11 +1493,22 @@ export default function App() {
             <span className="text-lg text-gray-400 group-hover:text-white transition-colors font-light tracking-wide">إضافة نص</span>
           </button>
           <button 
-            onClick={() => { setShowAddImagePopup(true); setImagePreviews([]); }}
-            className="flex flex-col items-center justify-center gap-4 transition-all cursor-pointer group hover:scale-105 active:scale-95 outline-none bg-transparent border-none"
+                onClick={() => {
+                  if (imageCooldownRemaining > 0) return;
+                  setShowAddImagePopup(true); 
+                  setImagePreviews([]); 
+                }}
+            disabled={imageCooldownRemaining > 0}
+            className={`flex flex-col items-center justify-center gap-4 transition-all outline-none bg-transparent border-none group ${imageCooldownRemaining > 0 ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:scale-105 active:scale-95'}`}
           >
-            <ImageIcon size={48} strokeWidth={1} className="text-gray-400 group-hover:text-white transition-colors" />
-            <span className="text-lg text-gray-400 group-hover:text-white transition-colors font-light tracking-wide">إضافة صورة</span>
+            {imageCooldownRemaining > 0 ? (
+               <div className="w-[48px] h-[48px] rounded-full border border-gray-600 flex items-center justify-center text-gray-500 font-bold text-xl">{imageCooldownRemaining}</div>
+            ) : (
+                <ImageIcon size={48} strokeWidth={1} className="text-gray-400 group-hover:text-white transition-colors" />
+            )}
+            <span className="text-lg text-gray-400 group-hover:text-white transition-colors font-light tracking-wide">
+              {imageCooldownRemaining > 0 ? `انتظر ${imageCooldownRemaining} ثواني` : 'إضافة صورة'}
+            </span>
           </button>
         </div>
       )}
@@ -2013,6 +2039,7 @@ export default function App() {
                     saveTextToDB(item).catch(e => console.error("Background upload error:", e));
                   });
                   
+                  setImageCooldownRemaining(15);
                   setShowAddImagePopup(false);
                   setImagePreviews([]);
                 }} 
