@@ -32,25 +32,37 @@ const appendToGoogleSheet = async (payload: any) => {
   }
 };
 
-// Simple concurrent upload queue for rocket speed and reliability
-const uploadQueue: {fn: () => Promise<any>, resolve: (v: any) => void, reject: (e: any) => void}[] = [];
+// Optimized concurrent upload queue with auto-retry and smarter throttling
+const uploadQueue: {fn: () => Promise<any>, resolve: (v: any) => void, reject: (e: any) => void, retryCount: number, payload: any}[] = [];
 let isProcessingQueue = false;
-const MAX_CONCURRENT_UPLOADS = 25; // High concurrency for "rocket speed"
+const MAX_CONCURRENT_UPLOADS = 12; // Balanced for maximum GAS + Browser throughput without triggering drops
 
 const processQueue = async () => {
   if (isProcessingQueue || uploadQueue.length === 0) return;
   isProcessingQueue = true;
   
   while (uploadQueue.length > 0) {
+    // Process in smaller optimized chunks to respect browser connection limits per domain
     const batch = uploadQueue.splice(0, MAX_CONCURRENT_UPLOADS);
     await Promise.all(batch.map(async (task) => {
       try {
         const result = await task.fn();
         task.resolve(result);
       } catch (e) {
-        task.reject(e);
+        if (task.retryCount < 5) {
+          task.retryCount++;
+          // Re-queue with a tiny backoff
+          setTimeout(() => {
+            uploadQueue.push(task);
+            processQueue();
+          }, 500 * task.retryCount);
+        } else {
+          task.reject(e);
+        }
       }
     }));
+    // Small breath for the UI thread
+    if (uploadQueue.length > 0) await new Promise(r => setTimeout(r, 10));
   }
   
   isProcessingQueue = false;
@@ -58,7 +70,14 @@ const processQueue = async () => {
 
 const queueUpload = (payload: any) => {
   return new Promise((resolve, reject) => {
-    uploadQueue.push({ fn: () => appendToGoogleSheet(payload), resolve, reject });
+    const task = { 
+      fn: () => appendToGoogleSheet(payload), 
+      resolve, 
+      reject, 
+      retryCount: 0,
+      payload 
+    };
+    uploadQueue.push(task);
     processQueue();
   });
 };
