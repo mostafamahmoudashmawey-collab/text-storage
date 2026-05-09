@@ -57,12 +57,11 @@ const processQueue = async () => {
     }
 
     while (uploadQueue.length > 0) {
-      // اقتطاع الدفعة الحالية بناءً على الشرط (النصف أو الثلث)
+      // اقتطاع الدفعة الحالية
       const batch = uploadQueue.splice(0, batchSize);
 
-      // ارسال الدفعة الحالية
-      for (let i = 0; i < batch.length; i++) {
-        const task = batch[i];
+      // ارسال الدفعة الحالية كلها في نفس الوقت
+      await Promise.all(batch.map(async (task, index) => {
         try {
           const result = await task.fn();
           task.resolve(result);
@@ -79,18 +78,16 @@ const processQueue = async () => {
             task.reject(e);
           }
         }
-        // تأخير بسيط جدا بين كل صورة في نفس الدفعة لكي لا يتم حظر الطلبات من جوجل ولمنع نقص أي صورة
-        await new Promise(r => setTimeout(r, 400));
-      }
+      }));
 
-      // الانتظار قبل الدفعة التالية (النصف الآخر أو الثلث التالى)
+      // الانتظار قبل الدفعة التالية لتخفيف الضغط
       if (uploadQueue.length > 0) {
         await new Promise(r => setTimeout(r, 2000));
       }
     }
 
     isProcessingQueue = false;
-  }, 500); // تجميع كافة الصور خلال نصف ثانية قبل بدء الارسال
+  }, 100); // تجميع كافة الطلبات
 };
 
 const queueUpload = (payload: any) => {
