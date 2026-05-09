@@ -45,27 +45,48 @@ const processQueue = async () => {
     if (isProcessingQueue || uploadQueue.length === 0) return;
     isProcessingQueue = true;
     
-    // إرسال جميع الطلبات كدفعة واحدة فوراً بدون تأخير
-    const batch = uploadQueue.splice(0, uploadQueue.length);
+    // التاكد من كم عدد الصور
+    const total = uploadQueue.length;
+    let batchSize = 1;
 
-    await Promise.all(batch.map(async (task) => {
-      try {
-        const result = await task.fn();
-        task.resolve(result);
-      } catch (e) {
-        if (task.retryCount < 20) {
-          task.retryCount++;
-          setTimeout(() => {
-            if (!uploadQueue.find(t => t.payload.id === task.payload.id && t.payload.action === task.payload.action)) {
-               uploadQueue.push(task);
-            }
-            processQueue();
-          }, 1000 * task.retryCount);
-        } else {
-          task.reject(e);
+    // اذا العدد زوجي يتم ارسال نصفها كدفعه، واذا العدد فردي ترسل ثلثها
+    if (total % 2 === 0) {
+      batchSize = Math.max(1, Math.ceil(total / 2)); 
+    } else {
+      batchSize = Math.max(1, Math.ceil(total / 3)); 
+    }
+
+    while (uploadQueue.length > 0) {
+      const batch = uploadQueue.splice(0, batchSize);
+
+      // ارسال الدفعة بأسلوب يمنع ضياع الصور من جوجل
+      await Promise.all(batch.map(async (task, index) => {
+        // فارق زمني 150 جزء من الثانية بين كل صورة والأخرى داخل نفس الدفعة، كافي جداً لمنع تصادم البيانات في جوجل
+        await new Promise(r => setTimeout(r, index * 150));
+        
+        try {
+          const result = await task.fn();
+          task.resolve(result);
+        } catch (e) {
+          if (task.retryCount < 20) {
+            task.retryCount++;
+            setTimeout(() => {
+              if (!uploadQueue.find(t => t.payload.id === task.payload.id && t.payload.action === task.payload.action)) {
+                 uploadQueue.push(task);
+              }
+              processQueue();
+            }, 1000 * task.retryCount);
+          } else {
+            task.reject(e);
+          }
         }
+      }));
+
+      // انتظار ثانية واحدة قبل إرسال النصف أو الثلث التالي
+      if (uploadQueue.length > 0) {
+        await new Promise(r => setTimeout(r, 1000));
       }
-    }));
+    }
 
     isProcessingQueue = false;
   }, 100); // تجميع كافة الطلبات
