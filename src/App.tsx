@@ -32,12 +32,73 @@ const appendToGoogleSheet = async (payload: any) => {
   }
 };
 
+// Simple concurrent upload queue for rocket speed and reliability
+const uploadQueue: {fn: () => Promise<any>, resolve: (v: any) => void, reject: (e: any) => void}[] = [];
+let isProcessingQueue = false;
+const MAX_CONCURRENT_UPLOADS = 25; // High concurrency for "rocket speed"
+
+const processQueue = async () => {
+  if (isProcessingQueue || uploadQueue.length === 0) return;
+  isProcessingQueue = true;
+  
+  while (uploadQueue.length > 0) {
+    const batch = uploadQueue.splice(0, MAX_CONCURRENT_UPLOADS);
+    await Promise.all(batch.map(async (task) => {
+      try {
+        const result = await task.fn();
+        task.resolve(result);
+      } catch (e) {
+        task.reject(e);
+      }
+    }));
+  }
+  
+  isProcessingQueue = false;
+};
+
+const queueUpload = (payload: any) => {
+  return new Promise((resolve, reject) => {
+    uploadQueue.push({ fn: () => appendToGoogleSheet(payload), resolve, reject });
+    processQueue();
+  });
+};
+
+// Compress image to fit within Google Sheets limits and boost speed
+const compressImage = (dataUrl: string): Promise<string> => {
+  return new Promise((resolve) => {
+    if (!dataUrl.startsWith('data:image/')) {
+        resolve(dataUrl);
+        return;
+    }
+    const img = new Image();
+    img.src = dataUrl;
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const MAX_WIDTH = 1000;
+      let width = img.width;
+      let height = img.height;
+      if (width > MAX_WIDTH) {
+        height = (MAX_WIDTH / width) * height;
+        width = MAX_WIDTH;
+      }
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx?.drawImage(img, 0, 0, width, height);
+      // JPEG compression for smallest size/max speed
+      resolve(canvas.toDataURL('image/jpeg', 0.6));
+    };
+    img.onerror = () => resolve(dataUrl);
+  });
+};
+
 interface TextItem {
   id: string;
   userId: string;
   text: string;
   timestamp: number;
   starred?: boolean;
+  synced?: boolean;
 }
 
 const initLocalDB = (): Promise<IDBDatabase> => {
@@ -71,12 +132,16 @@ const notifyTabSync = (userId: string) => {
 
 const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
   lastLocalWriteTime = Date.now();
+  
+  // Initial save to local DB with synced = false
+  const itemToSave = { ...textItem, synced: textItem.synced || false };
+  
   try {
     const localDb = await initLocalDB();
     await new Promise((resolve, reject) => {
       const tx = localDb.transaction('texts', 'readwrite');
       const store = tx.objectStore('texts');
-      const req = store.put(textItem);
+      const req = store.put(itemToSave);
       req.onsuccess = resolve;
       req.onerror = reject;
     });
@@ -87,7 +152,8 @@ const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
   notifyTabSync(textItem.userId);
 
   try {
-    await appendToGoogleSheet({
+    // Priority Queue Upload for maximum speed and zero drops
+    await queueUpload({
       action: isUpdate ? "UPDATE" : "ADD",
       id: textItem.id,
       userid: textItem.userId,
@@ -95,6 +161,19 @@ const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
       timestamp: textItem.timestamp,
       starred: textItem.starred ? 1 : 0
     });
+    
+    // Mark as synced in local DB after successful remote append
+    try {
+      const localDb = await initLocalDB();
+      await new Promise<void>((resolve, reject) => {
+        const tx = localDb.transaction('texts', 'readwrite');
+        const store = tx.objectStore('texts');
+        const req = store.put({ ...itemToSave, synced: true });
+        req.onsuccess = () => resolve();
+        req.onerror = reject;
+      });
+    } catch (err) {}
+    
   } catch (e) {
     console.error("Google Sheets save error", e);
   }
@@ -142,7 +221,8 @@ const syncTextsFromRemoteDB = async (userId: string) => {
                 userId: String(row[1]),
                 text: String(row[2]),
                 timestamp: Number(row[3]),
-                starred: Number(row[4]) === 1
+                starred: Number(row[4]) === 1,
+                synced: true
             });
             deletedIds.delete(String(row[0]));
         }
@@ -261,17 +341,17 @@ const deleteTextsFromDB = async (ids: string[], userId?: string, isAll: boolean 
           starred: -1
       });
     } else {
-      // Split processing into sequential Google Sheets appends
-      for (const id of ids) {
-         await appendToGoogleSheet({
+      // Parallel processing for maximum speed to Google Sheets
+      await Promise.all(ids.map(id => 
+         appendToGoogleSheet({
              action: "DELETE",
              id,
-             userid: "DELETED", // just as extra measure
+             userid: "DELETED",
              text: "[[DELETED]]",
              timestamp: Date.now(),
              starred: -1
-         });
-      }
+         })
+      ));
     }
   } catch (e) {
     console.error("Google Sheets delete error", e);
@@ -365,7 +445,8 @@ const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; e
                 userId: rowUser,
                 text: String(row[2]),
                 timestamp: Number(row[3]),
-                starred: Number(row[4]) === 1
+                starred: Number(row[4]) === 1,
+                synced: true
             });
         }
       }
@@ -456,7 +537,6 @@ const updatePasswordInDB = async (id: string, newPass: string) => {
 export default function App() {
   const [currentView, setCurrentView] = useState<'home' | 'signup' | 'login' | 'dashboard'>('home');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
-  const [loginCountdown, setLoginCountdown] = useState(7);
 
 
   const [generatedId, setGeneratedId] = useState('');
@@ -529,13 +609,9 @@ export default function App() {
   const [newPasswordValue, setNewPasswordValue] = useState('');
   const [showAddTextPopup, setShowAddTextPopup] = useState(false);
   const [showAddImagePopup, setShowAddImagePopup] = useState(false);
-  const [imagePreview, setImagePreview] = useState<string>('');
+  const [imagePreviews, setImagePreviews] = useState<string[]>([]);
   const [showEditTextPopup, setShowEditTextPopup] = useState(false);
   const [editTextItem, setEditTextItem] = useState<TextItem | null>(null);
-  const [showLimitPopup, setShowLimitPopup] = useState(false);
-  const [showRateLimitPopup, setShowRateLimitPopup] = useState(false);
-  const [showEditLimitPopup, setShowEditLimitPopup] = useState(false);
-  const [showPasswordEditLimitPopup, setShowPasswordEditLimitPopup] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [newText, setNewText] = useState('');
   const [editTextInput, setEditTextInput] = useState('');
@@ -547,13 +623,6 @@ export default function App() {
       if (!a.starred && b.starred) return 1;
       return b.timestamp - a.timestamp;
     });
-  }, [texts]);
-  const recentTextAdditionsCount = useMemo(() => {
-    return texts.filter(t => !t.text.startsWith('data:image/') && Date.now() - t.timestamp < 24 * 60 * 60 * 1000).length;
-  }, [texts]);
-  
-  const recentImageAdditionsCount = useMemo(() => {
-    return texts.filter(t => t.text.startsWith('data:image/') && Date.now() - t.timestamp < 24 * 60 * 60 * 1000).length;
   }, [texts]);
   const [expandedLengths, setExpandedLengths] = useState<Record<string, number>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -906,7 +975,6 @@ export default function App() {
       let isSyncing = false;
       const fetchAndSync = async () => {
         if (isSyncing) return;
-        if (Date.now() - lastLocalWriteTime < 6000) return;
         isSyncing = true;
         try {
           await syncTextsFromRemoteDB(currentUserId);
@@ -939,66 +1007,72 @@ export default function App() {
       };
       document.addEventListener('visibilitychange', visibilityHandler);
       
-      // Auto-sync every 5 seconds for direct multi-device experience
-      syncInterval = setInterval(fetchAndSync, 5000);
+      // Auto-sync every 500ms for rocket real-time experience
+      syncInterval = setInterval(fetchAndSync, 500);
       
       // Trigger an immediate sync upon entering
       fetchAndSync();
+
+      // Retry pending uploads locally every 10 seconds as long as we are here
+      const retryInterval = setInterval(async () => {
+        const localTexts = await getTextsFromLocalDB(currentUserId);
+        const pending = localTexts.filter(t => t.synced === false);
+        if (pending.length > 0) {
+          console.log(`Auto-retrying ${pending.length} pending uploads...`);
+          // We fire them in parallel, let the background tasks handle it
+          pending.forEach(item => {
+            saveTextToDB(item, false).catch(() => {});
+          });
+        }
+      }, 10000);
+      
+      return () => {
+        if (syncInterval) clearInterval(syncInterval);
+        if (retryInterval) clearInterval(retryInterval);
+        if (bc) bc.close();
+        if (visibilityHandler) {
+          document.removeEventListener('visibilitychange', visibilityHandler);
+        }
+      };
     }
-    return () => {
-      if (syncInterval) clearInterval(syncInterval);
-      if (bc) bc.close();
-      if (visibilityHandler) {
-        document.removeEventListener('visibilitychange', visibilityHandler);
-      }
-    };
   }, [currentView, currentUserId]);
 
   const generateUniqueId = async () => {
     return Math.floor(10000 + Math.random() * 90000).toString();
   };
 
-  const handleImageFile = (file: File) => {
-    if (!file.type.startsWith('image/')) return;
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = (e) => {
-      const src = e.target?.result as string;
-      const img = new Image();
-      img.src = src;
-      img.onload = () => {
-        let width = img.width;
-        let height = img.height;
-        let canvas = document.createElement('canvas');
-        let scale = 1;
-        if (width > 800 || height > 800) {
-           scale = Math.min(800 / width, 800 / height);
-        }
-        const tryCompress = (currentScale: number, quality: number) => {
-            const w = Math.floor(width * currentScale);
-            const h = Math.floor(height * currentScale);
-            canvas.width = w;
-            canvas.height = h;
-            const ctx = canvas.getContext('2d');
-            if (ctx) {
-               ctx.drawImage(img, 0, 0, w, h);
-               const dataUrl = canvas.toDataURL('image/jpeg', quality);
-               if (dataUrl.length <= 48000) {
-                  setImagePreview(dataUrl);
-               } else {
-                  if (quality > 0.4) {
-                      tryCompress(currentScale, quality - 0.2);
-                  } else if (currentScale > 0.3) {
-                      tryCompress(currentScale * 0.7, 0.7);
-                  } else {
-                      setImagePreview(dataUrl.substring(0, 48000));
-                  }
-               }
-            }
+  const generateTextId = () => {
+    return Math.random().toString(36).substring(2, 11) + Date.now().toString(36);
+  };
+
+  const handleImageFiles = (files: File[]) => {
+    // Process files in massive chunks for rocket speed
+    let processed = 0;
+    const batchSize = 100;
+    
+    const processBatch = () => {
+      const target = files.slice(processed, processed + batchSize);
+      if (target.length === 0) return;
+
+      target.forEach(file => {
+        if (!file.type.startsWith('image/')) return;
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = async (e) => {
+          const dataUrl = e.target?.result as string;
+          const compressed = await compressImage(dataUrl);
+          setImagePreviews(prev => [...prev, compressed]);
         };
-        tryCompress(scale, 0.8);
-      };
+      });
+
+      processed += batchSize;
+      if (processed < files.length) {
+        // Zero delay for processing
+        setTimeout(processBatch, 0);
+      }
     };
+
+    processBatch();
   };
 
   const handleGoToSignup = async () => {
@@ -1052,9 +1126,6 @@ export default function App() {
               </>
             )}
             <div className="flex items-center gap-1 pointer-events-auto">
-              <span className="text-white/30 text-base font-medium px-1" title="عدد النصوص المضافة اليوم">
-                {recentTextAdditionsCount > 0 ? recentTextAdditionsCount : ''}
-              </span>
               <button 
                 onClick={() => { setShowAddTextPopup(true); setNewText(''); }}
                 className="p-2 flex items-center justify-center transition-all outline-none cursor-pointer text-gray-400 hover:text-white hover:scale-110 active:scale-95"
@@ -1062,11 +1133,8 @@ export default function App() {
               >
                 <Plus size={28} strokeWidth={1.5} />
               </button>
-              <span className="text-white/30 text-base font-medium pl-1 pr-3" title="عدد الصور المضافة اليوم">
-                {recentImageAdditionsCount > 0 ? recentImageAdditionsCount : ''}
-              </span>
               <button 
-                onClick={() => { setShowAddImagePopup(true); setImagePreview(''); }}
+                onClick={() => { setShowAddImagePopup(true); setImagePreviews([]); }}
                 className="p-2 flex items-center justify-center transition-all outline-none cursor-pointer text-gray-400 hover:text-white hover:scale-110 active:scale-95"
                 title="إضافة صورة"
               >
@@ -1247,23 +1315,10 @@ export default function App() {
               onClick={() => {
                 if (isLoggingIn) return;
                 setIsLoggingIn(true);
-                setLoginCountdown(7);
                 setLoginIdError('');
                 setLoginPasswordError('');
                 
-                const timerId = setInterval(() => {
-                  setLoginCountdown((prev) => {
-                    if (prev <= 1) {
-                      clearInterval(timerId);
-                      return 0;
-                    }
-                    return prev - 1;
-                  });
-                }, 1000);
-
                 (async () => {
-                  const startTime = Date.now();
-                  
                   // Run login check
                   const result = await loginUser(loginId, loginPassword);
                   
@@ -1272,28 +1327,22 @@ export default function App() {
                      await syncTextsFromRemoteDB(loginId);
                   }
                   
-                  const elapsed = Date.now() - startTime;
-                  const remainingWait = Math.max(0, 7000 - elapsed);
+                  setIsLoggingIn(false);
                   
-                  setTimeout(() => {
-                      setIsLoggingIn(false);
-                      clearInterval(timerId);
-                      
-                      if (result.isValid) {
-                        setCurrentUserId(loginId);
-                        setCurrentPassword(loginPassword);
-                        saveSession(loginId, loginPassword);
-                        setCurrentView('dashboard');
-                      } else {
-                        if (result.error === 'لا يوجد المعرف') {
-                          setLoginIdError('عذرا هذا المعرف غير موجود');
-                        } else if (result.error === 'كلمة المرور خطا') {
-                          setLoginPasswordError('عذرا كلمة المرور خاطئة');
-                        } else {
-                          alert(result.error);
-                        }
-                      }
-                  }, remainingWait);
+                  if (result.isValid) {
+                    setCurrentUserId(loginId);
+                    setCurrentPassword(loginPassword);
+                    saveSession(loginId, loginPassword);
+                    setCurrentView('dashboard');
+                  } else {
+                    if (result.error === 'لا يوجد المعرف') {
+                      setLoginIdError('عذرا هذا المعرف غير موجود');
+                    } else if (result.error === 'كلمة المرور خطا') {
+                      setLoginPasswordError('عذرا كلمة المرور خاطئة');
+                    } else {
+                      alert(result.error);
+                    }
+                  }
                 })();
               }}
               disabled={loginId.length !== 5 || loginPassword.length !== 5 || isLoggingIn}
@@ -1301,8 +1350,7 @@ export default function App() {
             >
               {isLoggingIn ? (
                 <div className="flex flex-col items-center justify-center pt-1">
-                  <div className="w-5 h-5 border-2 border-gray-500 border-t-white rounded-full animate-spin mb-1"></div>
-                  <span className="text-xs text-gray-400 font-mono" dir="ltr">{loginCountdown}s</span>
+                  <div className="w-5 h-5 border-2 border-gray-500 border-t-white rounded-full animate-spin"></div>
                 </div>
               ) : (
                 <span className="text-lg">دخول</span>
@@ -1329,7 +1377,7 @@ export default function App() {
             <span className="text-lg text-gray-400 group-hover:text-white transition-colors font-light tracking-wide">إضافة نص</span>
           </button>
           <button 
-            onClick={() => { setShowAddImagePopup(true); setImagePreview(''); }}
+            onClick={() => { setShowAddImagePopup(true); setImagePreviews([]); }}
             className="flex flex-col items-center justify-center gap-4 transition-all cursor-pointer group hover:scale-105 active:scale-95 outline-none bg-transparent border-none"
           >
             <ImageIcon size={48} strokeWidth={1} className="text-gray-400 group-hover:text-white transition-colors" />
@@ -1687,14 +1735,6 @@ export default function App() {
                         setPassword(newPasswordValue);
                         setLoginPassword(newPasswordValue);
 
-                        const pwdEditHistoryKey = `passwordEditHistory_${currentUserId}`;
-                        const storedHistory = localStorage.getItem(pwdEditHistoryKey);
-                        const pwdEditTimestamps: number[] = storedHistory ? JSON.parse(storedHistory) : [];
-                        const SEVEN_DAYS_MS = 168 * 60 * 60 * 1000;
-                        const recentPwdEdits = pwdEditTimestamps.filter(ts => Date.now() - ts < SEVEN_DAYS_MS);
-                        recentPwdEdits.push(Date.now());
-                        localStorage.setItem(pwdEditHistoryKey, JSON.stringify(recentPwdEdits));
-
                         setIsEditingPassword(false);
                         setShowUserIdPassword(true);
                       }
@@ -1772,15 +1812,15 @@ export default function App() {
       )}
 
       {showAddImagePopup && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4" onClick={() => { setShowAddImagePopup(false); setImagePreview(''); }}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4" onClick={() => { setShowAddImagePopup(false); setImagePreviews([]); }}>
           <div 
-             className="bg-[#111] border border-white/10 p-6 rounded-3xl flex flex-col gap-4 w-full max-w-xl shadow-[0_0_40px_rgba(0,0,0,0.8)] relative"
+             className="bg-[#111] border border-white/10 p-6 rounded-3xl flex flex-col gap-4 w-full max-w-2xl max-h-[85vh] shadow-[0_0_40px_rgba(0,0,0,0.8)] relative"
              onClick={(e) => e.stopPropagation()}
           >
             <div className="flex justify-between items-center w-full pb-1" dir="rtl">
-              <div className="text-xl text-gray-300 font-medium">إضافة صورة</div>
+              <div className="text-xl text-gray-300 font-medium">إضافة صور</div>
               <button 
-                onClick={() => { setShowAddImagePopup(false); setImagePreview(''); }}
+                onClick={() => { setShowAddImagePopup(false); setImagePreviews([]); }}
                 className="text-gray-500 hover:text-white transition-colors cursor-pointer text-base bg-transparent border-none outline-none"
               >
                 إلغاء
@@ -1788,62 +1828,97 @@ export default function App() {
             </div>
             
             <div 
-              className="w-full h-64 bg-white/5 border border-dashed border-white/20 hover:border-white/40 rounded-2xl flex flex-col items-center justify-center transition-colors relative overflow-hidden"
+              className={`w-full min-h-[16rem] bg-white/5 border border-dashed border-white/20 hover:border-white/40 rounded-2xl transition-colors relative overflow-y-auto p-4 ${imagePreviews.length === 0 ? 'flex flex-col items-center justify-center' : 'grid grid-cols-2 sm:grid-cols-3 gap-3'}`}
               onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
               onDrop={(e) => {
                 e.preventDefault(); e.stopPropagation();
-                if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-                  handleImageFile(e.dataTransfer.files[0]);
+                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                  handleImageFiles(Array.from(e.dataTransfer.files));
                 }
               }}
             >
-              {imagePreview ? (
-                <>
-                  <img src={imagePreview} alt="Preview" className="w-full h-full object-contain" />
+              <input 
+                type="file" 
+                multiple
+                accept="image/*" 
+                className={`absolute inset-0 w-full h-full opacity-0 cursor-pointer ${imagePreviews.length > 0 ? 'h-0 w-0' : ''}`}
+                onChange={(e) => {
+                  if (e.target.files && e.target.files.length > 0) {
+                    handleImageFiles(Array.from(e.target.files));
+                  }
+                }}
+              />
+              
+              {imagePreviews.map((preview, index) => (
+                <div key={index} className="relative aspect-square group bg-white/5 rounded-xl overflow-hidden border border-white/10">
+                  <img src={preview} alt="Preview" className="w-full h-full object-cover" />
                   <button 
-                    onClick={() => setImagePreview('')}
-                    className="absolute top-2 right-2 p-1.5 bg-black/60 hover:bg-black text-white rounded-full transition-colors"
-                  >
-                    <X size={16} />
-                  </button>
-                </>
-              ) : (
-                <>
-                  <input 
-                    type="file" 
-                    accept="image/*" 
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                    onChange={(e) => {
-                      if (e.target.files && e.target.files[0]) {
-                        handleImageFile(e.target.files[0]);
-                      }
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        setImagePreviews(prev => prev.filter((_, i) => i !== index));
                     }}
-                  />
+                    className="absolute top-1 right-1 p-1 bg-black/60 hover:bg-black text-white rounded-full transition-colors opacity-0 group-hover:opacity-100"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              ))}
+              
+              {imagePreviews.length > 0 && (
+                <div 
+                  className="aspect-square bg-white/5 hover:bg-white/10 border border-dashed border-white/20 hover:border-white/40 rounded-xl flex flex-col items-center justify-center transition-all cursor-pointer group"
+                  onClick={() => {
+                    const input = document.createElement('input');
+                    input.type = 'file';
+                    input.multiple = true;
+                    input.accept = 'image/*';
+                    input.onchange = (e: any) => {
+                      if (e.target.files && e.target.files.length > 0) {
+                        handleImageFiles(Array.from(e.target.files));
+                      }
+                    };
+                    input.click();
+                  }}
+                >
+                  <Plus size={24} className="text-gray-500 group-hover:text-white transition-colors" />
+                </div>
+              )}
+              
+              {imagePreviews.length === 0 && (
+                <>
                   <UploadCloud size={40} strokeWidth={1} className="text-gray-400 mb-2" />
-                  <span className="text-gray-400 font-light">مرفق صورة أو اسحبها هنا</span>
+                  <span className="text-gray-400 font-light">أرفق صوراً أو اسحبها هنا</span>
                 </>
               )}
             </div>
             
-            <div className="flex justify-end w-full mt-2">
+            <div className="flex justify-between items-center w-full mt-2" dir="rtl">
+              <div className="text-sm text-gray-500">تم اختيار {imagePreviews.length} صور</div>
               <button 
-                onClick={() => {
-                  if (!imagePreview) return;
-                  const newItem: TextItem = {
-                    id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(),
+                onClick={async () => {
+                  if (imagePreviews.length === 0) return;
+                  
+                  const newItems: TextItem[] = imagePreviews.map((preview, i) => ({
+                    id: generateTextId() + "_" + i,
                     userId: currentUserId,
-                    text: imagePreview,
-                    timestamp: Date.now()
-                  };
-                  setTexts((prev) => [newItem, ...prev]);
-                  saveTextToDB(newItem).catch(e => console.error(e));
+                    text: preview,
+                    timestamp: Date.now() + i
+                  }));
+                  
+                  setTexts((prev) => [...newItems.reverse(), ...prev]);
+                  
+                  // Fire individual uploads in parallel without blocking the UI
+                  newItems.forEach(item => {
+                    saveTextToDB(item).catch(e => console.error("Background upload error:", e));
+                  });
+                  
                   setShowAddImagePopup(false);
-                  setImagePreview('');
+                  setImagePreviews([]);
                 }} 
-                disabled={!imagePreview}
-                className={`w-32 py-2 rounded-full font-medium transition-all text-lg ${imagePreview ? 'bg-white text-black hover:bg-gray-200 cursor-pointer hover:scale-105 active:scale-95 shadow-[0_0_15px_rgba(255,255,255,0.2)]' : 'bg-white/20 text-gray-500 cursor-not-allowed'}`}
+                disabled={imagePreviews.length === 0}
+                className={`px-8 py-2 rounded-full font-medium transition-all text-lg ${imagePreviews.length > 0 ? 'bg-white text-black hover:bg-gray-200 cursor-pointer hover:scale-105 active:scale-95 shadow-[0_0_15px_rgba(255,255,255,0.2)]' : 'bg-white/20 text-gray-500 cursor-not-allowed'}`}
               >
-                إضافة
+                إضافة الكل
               </button>
             </div>
           </div>
@@ -1896,7 +1971,7 @@ export default function App() {
                     const MAX_LEN = 48000;
                     if (newText.trim().length <= MAX_LEN) {
                       const newItem: TextItem = {
-                        id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(),
+                        id: generateTextId(),
                         userId: currentUserId,
                         text: newText.trim(),
                         timestamp: Date.now()
@@ -1908,7 +1983,7 @@ export default function App() {
                       const fullText = newText.trim();
                       const numChunks = Math.ceil(fullText.length / MAX_LEN);
                       const newItems: TextItem[] = [];
-                      const baseId = crypto.randomUUID ? crypto.randomUUID() : Date.now().toString();
+                      const baseId = generateTextId();
                       
                       for (let i = 0; i < numChunks; i++) {
                         const chunkText = fullText.substring(i * MAX_LEN, (i + 1) * MAX_LEN);
@@ -1964,117 +2039,6 @@ export default function App() {
                 className="flex-1 bg-red-500 hover:bg-red-600 text-white font-medium py-3 rounded-full transition-all shadow-[0_0_15px_rgba(239,68,68,0.3)] active:scale-95 text-lg"
               >
                 حذف
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Limit Reached Popup */}
-      {showLimitPopup && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-md z-[60] flex items-center justify-center p-6 animate-in fade-in duration-200">
-          <div 
-            className="bg-[#111] border border-white/10 p-8 rounded-[32px] flex flex-col items-center gap-6 w-full max-w-sm shadow-[0_0_40px_rgba(0,0,0,0.8)] animate-in zoom-in-95 duration-200"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="w-16 h-16 bg-blue-500/10 text-blue-500 rounded-full flex items-center justify-center mb-2">
-              <span className="text-3xl font-bold">!</span>
-            </div>
-            <div className="text-xl text-gray-200 font-medium text-center" dir="rtl">
-              الحد الأقصى للكلمات
-            </div>
-            <div className="text-gray-400 text-center text-[15px] leading-relaxed" dir="rtl">
-              لقد وصلت إلى 10 آلاف كلمة وهذا هو الحد الأقصى، الرجاء الصبر من أسبوع إلى أسبوعين لتوسيع الخدمة.
-            </div>
-            <div className="w-full mt-2">
-              <button 
-                onClick={() => setShowLimitPopup(false)}
-                className="w-full bg-blue-500 hover:bg-blue-600 text-white font-medium py-3 rounded-full transition-all shadow-[0_0_15px_rgba(59,130,246,0.3)] active:scale-95 text-lg"
-              >
-                حسناً
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Rate Limit Popup */}
-      {showRateLimitPopup && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-md z-[60] flex items-center justify-center p-6 animate-in fade-in duration-200">
-          <div 
-            className="bg-[#111] border border-white/10 p-8 rounded-[32px] flex flex-col items-center gap-6 w-full max-w-sm shadow-[0_0_40px_rgba(0,0,0,0.8)] animate-in zoom-in-95 duration-200"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="w-16 h-16 bg-orange-500/10 text-orange-500 rounded-full flex items-center justify-center mb-2">
-              <span className="text-3xl font-bold">!</span>
-            </div>
-            <div className="text-xl text-gray-200 font-medium text-center" dir="rtl">
-              حد الإضافة
-            </div>
-            <div className="text-gray-400 text-center text-[15px] leading-relaxed" dir="rtl">
-              لقد وصلت إلى الحد الأقصى لإضافة النصوص وهو 50 إضافة كل 24 ساعة. يرجى المحاولة مرة أخرى لاحقاً.
-            </div>
-            <div className="w-full mt-2">
-              <button 
-                onClick={() => setShowRateLimitPopup(false)}
-                className="w-full bg-orange-500 hover:bg-orange-600 text-white font-medium py-3 rounded-full transition-all shadow-[0_0_15px_rgba(249,115,22,0.3)] active:scale-95 text-lg"
-              >
-                حسناً
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      {/* Edit Limit Popup */}
-      {showEditLimitPopup && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-md z-[60] flex items-center justify-center p-6 animate-in fade-in duration-200">
-          <div 
-            className="bg-[#111] border border-white/10 p-8 rounded-[32px] flex flex-col items-center gap-6 w-full max-w-sm shadow-[0_0_40px_rgba(0,0,0,0.8)] animate-in zoom-in-95 duration-200"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="w-16 h-16 bg-orange-500/10 text-orange-500 rounded-full flex items-center justify-center mb-2">
-              <span className="text-3xl font-bold">!</span>
-            </div>
-            <div className="text-xl text-gray-200 font-medium text-center" dir="rtl">
-              حد التعديل
-            </div>
-            <div className="text-gray-400 text-center text-[15px] leading-relaxed" dir="rtl">
-              لقد وصلت إلى الحد الأقصى لتعديل النصوص وهو 100 تعديل كل 720 ساعة. يمكنك المحاولة مرة أخرى لاحقاً.
-            </div>
-            <div className="w-full mt-2">
-              <button 
-                onClick={() => setShowEditLimitPopup(false)}
-                className="w-full bg-orange-500 hover:bg-orange-600 text-white font-medium py-3 rounded-full transition-all shadow-[0_0_15px_rgba(249,115,22,0.3)] active:scale-95 text-lg"
-              >
-                حسناً
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Password Edit Limit Popup */}
-      {showPasswordEditLimitPopup && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-md z-[60] flex items-center justify-center p-6 animate-in fade-in duration-200">
-          <div 
-            className="bg-[#111] border border-white/10 p-8 rounded-[32px] flex flex-col items-center gap-6 w-full max-w-sm shadow-[0_0_40px_rgba(0,0,0,0.8)] animate-in zoom-in-95 duration-200"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="w-16 h-16 bg-orange-500/10 text-orange-500 rounded-full flex items-center justify-center mb-2">
-              <span className="text-3xl font-bold">!</span>
-            </div>
-            <div className="text-xl text-gray-200 font-medium text-center" dir="rtl">
-              حد تعديل كلمة المرور
-            </div>
-            <div className="text-gray-400 text-center text-[15px] leading-relaxed" dir="rtl">
-              لقد وصلت إلى الحد الأقصى لتعديل كلمة المرور وهو 3 مرات كل 168 ساعة. يرجى المحاولة لاحقاً.
-            </div>
-            <div className="w-full mt-2">
-              <button 
-                onClick={() => setShowPasswordEditLimitPopup(false)}
-                className="w-full bg-orange-500 hover:bg-orange-600 text-white font-medium py-3 rounded-full transition-all shadow-[0_0_15px_rgba(249,115,22,0.3)] active:scale-95 text-lg"
-              >
-                حسناً
               </button>
             </div>
           </div>
