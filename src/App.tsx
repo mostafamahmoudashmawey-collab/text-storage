@@ -32,17 +32,17 @@ const appendToGoogleSheet = async (payload: any) => {
   }
 };
 
-// Optimized concurrent upload queue with auto-retry and smarter throttling
+// Optimized sequential upload queue to avoid Google Sheets appendRow conflicts
 const uploadQueue: {fn: () => Promise<any>, resolve: (v: any) => void, reject: (e: any) => void, retryCount: number, payload: any}[] = [];
 let isProcessingQueue = false;
-const MAX_CONCURRENT_UPLOADS = 5; // Safe concurrency to prevent Google Apps Script drop-offs and locks
+const MAX_CONCURRENT_UPLOADS = 1; // 1 is CRITICAL: Google Apps Script appendRow drops data during concurrent writes without LockService
 
 const processQueue = async () => {
   if (isProcessingQueue || uploadQueue.length === 0) return;
   isProcessingQueue = true;
   
   while (uploadQueue.length > 0) {
-    // Process in smaller optimized chunks to respect browser connection limits per domain
+    // Process strictly sequentially to prevent Google Sheets race conditions and locks
     const batch = uploadQueue.splice(0, MAX_CONCURRENT_UPLOADS);
     await Promise.all(batch.map(async (task) => {
       try {
@@ -51,7 +51,7 @@ const processQueue = async () => {
       } catch (e) {
         if (task.retryCount < 20) {
           task.retryCount++;
-          // Re-queue with a tiny backoff
+          // Re-queue with a backoff
           setTimeout(() => {
             if (!uploadQueue.find(t => t.payload.id === task.payload.id && t.payload.action === task.payload.action)) {
                uploadQueue.push(task);
@@ -63,8 +63,8 @@ const processQueue = async () => {
         }
       }
     }));
-    // Small breath for the UI thread
-    if (uploadQueue.length > 0) await new Promise(r => setTimeout(r, 100));
+    // Minimal delay between appends to give Apps Script a moment to breathe
+    if (uploadQueue.length > 0) await new Promise(r => setTimeout(r, 400));
   }
   
   isProcessingQueue = false;
@@ -218,18 +218,6 @@ const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
       timestamp: textItem.timestamp,
       starred: textItem.starred ? 1 : 0
     });
-    
-    // Mark as synced in local DB after successful remote append
-    try {
-      const localDb = await initLocalDB();
-      await new Promise<void>((resolve, reject) => {
-        const tx = localDb.transaction('texts', 'readwrite');
-        const store = tx.objectStore('texts');
-        const req = store.put({ ...itemToSave, synced: true });
-        req.onsuccess = () => resolve();
-        req.onerror = reject;
-      });
-    } catch (err) {}
     
   } catch (e) {
     console.error("Google Sheets save error", e);
