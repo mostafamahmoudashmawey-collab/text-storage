@@ -32,39 +32,38 @@ const appendToGoogleSheet = async (payload: any) => {
   }
 };
 
-// Optimized sequential upload queue to avoid Google Sheets appendRow conflicts
+// Optimized sequential upload queue to avoid Google Sheets appendRow conflicts but extremely fast
 const uploadQueue: {fn: () => Promise<any>, resolve: (v: any) => void, reject: (e: any) => void, retryCount: number, payload: any}[] = [];
 let isProcessingQueue = false;
-const MAX_CONCURRENT_UPLOADS = 1; // 1 is CRITICAL: Google Apps Script appendRow drops data during concurrent writes without LockService
 
 const processQueue = async () => {
   if (isProcessingQueue || uploadQueue.length === 0) return;
   isProcessingQueue = true;
   
   while (uploadQueue.length > 0) {
-    // Process strictly sequentially to prevent Google Sheets race conditions and locks
-    const batch = uploadQueue.splice(0, MAX_CONCURRENT_UPLOADS);
-    await Promise.all(batch.map(async (task) => {
-      try {
-        const result = await task.fn();
-        task.resolve(result);
-      } catch (e) {
-        if (task.retryCount < 20) {
-          task.retryCount++;
-          // Re-queue with a backoff
-          setTimeout(() => {
-            if (!uploadQueue.find(t => t.payload.id === task.payload.id && t.payload.action === task.payload.action)) {
-               uploadQueue.push(task);
-            }
-            processQueue();
-          }, 1000 * task.retryCount);
-        } else {
-          task.reject(e);
-        }
+    // Process strictly one by one (sequentially) for safety, but with zero added delay for rocket speed
+    const task = uploadQueue.shift();
+    if (!task) break;
+
+    try {
+      const result = await task.fn();
+      task.resolve(result);
+    } catch (e) {
+      if (task.retryCount < 20) {
+        task.retryCount++;
+        // Re-queue with a backoff
+        setTimeout(() => {
+          if (!uploadQueue.find(t => t.payload.id === task.payload.id && t.payload.action === task.payload.action)) {
+             uploadQueue.push(task);
+          }
+          processQueue();
+        }, 1000 * task.retryCount);
+      } else {
+        task.reject(e);
       }
-    }));
-    // Minimal delay between appends to give Apps Script a moment to breathe
-    if (uploadQueue.length > 0) await new Promise(r => setTimeout(r, 400));
+    }
+    // Tiny breath for UI, minimal delay to keep it lightning fast
+    if (uploadQueue.length > 0) await new Promise(r => setTimeout(r, 10));
   }
   
   isProcessingQueue = false;
@@ -101,7 +100,7 @@ const compressImage = (dataUrl: string): Promise<string> => {
     img.src = dataUrl;
     img.onload = () => {
       const canvas = document.createElement('canvas');
-      let MAX_WIDTH = 500; // very aggressive start for tiny base64 texts
+      let MAX_WIDTH = 300; // Extremely aggressive start for tiny base64
       let width = img.width;
       let height = img.height;
       if (width > MAX_WIDTH) {
@@ -109,7 +108,7 @@ const compressImage = (dataUrl: string): Promise<string> => {
         width = MAX_WIDTH;
       }
       
-      let quality = 0.6;
+      let quality = 0.5;
       let result = '';
       
       const compress = () => {
@@ -120,20 +119,20 @@ const compressImage = (dataUrl: string): Promise<string> => {
         ctx?.drawImage(img, 0, 0, width, height);
         result = canvas.toDataURL('image/jpeg', quality);
         
-        // Target an incredibly safe and small size for "رهيب" compression requested
-        if (result.length > 25000) {
-          if (quality > 0.15) {
+        // Target an incredibly safe and ultra small size for "رهيب" compression requested
+        if (result.length > 15000) {
+          if (quality > 0.1) {
             quality -= 0.15;
             compress();
-          } else if (MAX_WIDTH > 100) {
-             MAX_WIDTH = Math.floor(MAX_WIDTH * 0.7);
+          } else if (MAX_WIDTH > 80) {
+             MAX_WIDTH = Math.floor(MAX_WIDTH * 0.6);
              width = img.width;
              height = img.height;
              if (width > MAX_WIDTH) {
                height = (MAX_WIDTH / width) * height;
                width = MAX_WIDTH;
              }
-             quality = 0.5;
+             quality = 0.4;
              compress();
           } else {
              resolve(result);
