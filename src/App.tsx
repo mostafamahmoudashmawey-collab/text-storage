@@ -82,7 +82,7 @@ const queueUpload = (payload: any) => {
   });
 };
 
-// Compress image to fit within Google Sheets limits and boost speed
+// Compress image to strictly fit within Google Sheets limits
 const compressImage = (dataUrl: string): Promise<string> => {
   return new Promise((resolve) => {
     if (!dataUrl.startsWith('data:image/')) {
@@ -93,19 +93,49 @@ const compressImage = (dataUrl: string): Promise<string> => {
     img.src = dataUrl;
     img.onload = () => {
       const canvas = document.createElement('canvas');
-      const MAX_WIDTH = 1000;
+      let MAX_WIDTH = 800; // slightly smaller starting goal
       let width = img.width;
       let height = img.height;
       if (width > MAX_WIDTH) {
         height = (MAX_WIDTH / width) * height;
         width = MAX_WIDTH;
       }
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      ctx?.drawImage(img, 0, 0, width, height);
-      // JPEG compression for smallest size/max speed
-      resolve(canvas.toDataURL('image/jpeg', 0.6));
+      
+      let quality = 0.6;
+      let result = '';
+      
+      const compress = () => {
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx?.clearRect(0, 0, width, height);
+        ctx?.drawImage(img, 0, 0, width, height);
+        result = canvas.toDataURL('image/jpeg', quality);
+        
+        if (result.length > 45000) {
+          if (quality > 0.2) {
+            quality -= 0.15;
+            compress();
+          } else if (MAX_WIDTH > 200) {
+             MAX_WIDTH -= 150;
+             width = img.width;
+             height = img.height;
+             if (width > MAX_WIDTH) {
+               height = (MAX_WIDTH / width) * height;
+               width = MAX_WIDTH;
+             }
+             quality = 0.5;
+             compress();
+          } else {
+             // In lowest case ever, just resolve. 
+             resolve(result);
+          }
+        } else {
+          resolve(result);
+        }
+      };
+      
+      compress();
     };
     img.onerror = () => resolve(dataUrl);
   });
