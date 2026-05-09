@@ -82,7 +82,7 @@ const processQueue = async () => {
 
       // الانتظار قبل الدفعة التالية لتخفيف الضغط
       if (uploadQueue.length > 0) {
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise(r => setTimeout(r, 1000));
       }
     }
 
