@@ -45,20 +45,21 @@ const processQueue = async () => {
     if (isProcessingQueue || uploadQueue.length === 0) return;
     isProcessingQueue = true;
     
+    // First, a condition to know how many items are waiting
     const total = uploadQueue.length;
     let batchSize = 1;
     if (total % 2 === 0) {
-      batchSize = Math.max(1, total / 2); // Half then half
+      batchSize = Math.max(1, total / 2); // Half
     } else {
-      batchSize = Math.max(1, Math.ceil(total / 3)); // Third then third then third
+      batchSize = Math.max(1, Math.ceil(total / 3)); // Third
     }
 
     while (uploadQueue.length > 0) {
       const batch = uploadQueue.splice(0, batchSize);
 
       await Promise.all(batch.map(async (task, index) => {
-        // Very slight inner stagger to avoid absolute collision on Apps Script but keep it super fast
-        await new Promise(r => setTimeout(r, index * 10));
+        // Very slight inner stagger
+        await new Promise(r => setTimeout(r, index * 100)); // increased stagger to 100ms
         try {
           const result = await task.fn();
           task.resolve(result);
@@ -77,12 +78,12 @@ const processQueue = async () => {
         }
       }));
 
-      // No delay between consecutive batches as requested by user
-      if (uploadQueue.length > 0) await new Promise(r => setTimeout(r, 0));
+      // Wait between batches to prevent Google Sheets from dropping rows
+      if (uploadQueue.length > 0) await new Promise(r => setTimeout(r, 1500));
     }
 
     isProcessingQueue = false;
-  }, 50);
+  }, 500);
 };
 
 const queueUpload = (payload: any) => {
