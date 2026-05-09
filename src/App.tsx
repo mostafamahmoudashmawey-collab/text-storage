@@ -101,7 +101,7 @@ const compressImage = (dataUrl: string): Promise<string> => {
     img.src = dataUrl;
     img.onload = () => {
       const canvas = document.createElement('canvas');
-      let MAX_WIDTH = 800; // slightly smaller starting goal
+      let MAX_WIDTH = 500; // very aggressive start for tiny base64 texts
       let width = img.width;
       let height = img.height;
       if (width > MAX_WIDTH) {
@@ -120,12 +120,13 @@ const compressImage = (dataUrl: string): Promise<string> => {
         ctx?.drawImage(img, 0, 0, width, height);
         result = canvas.toDataURL('image/jpeg', quality);
         
-        if (result.length > 45000) {
-          if (quality > 0.2) {
+        // Target an incredibly safe and small size for "رهيب" compression requested
+        if (result.length > 25000) {
+          if (quality > 0.15) {
             quality -= 0.15;
             compress();
-          } else if (MAX_WIDTH > 200) {
-             MAX_WIDTH -= 150;
+          } else if (MAX_WIDTH > 100) {
+             MAX_WIDTH = Math.floor(MAX_WIDTH * 0.7);
              width = img.width;
              height = img.height;
              if (width > MAX_WIDTH) {
@@ -135,7 +136,6 @@ const compressImage = (dataUrl: string): Promise<string> => {
              quality = 0.5;
              compress();
           } else {
-             // In lowest case ever, just resolve. 
              resolve(result);
           }
         } else {
@@ -681,6 +681,7 @@ export default function App() {
       return b.timestamp - a.timestamp;
     });
   }, [texts]);
+  const pendingCount = useMemo(() => texts.filter(t => t.synced === false).length, [texts]);
   const recentTextAdditionsCount = useMemo(() => {
     return texts.filter(t => !t.text.startsWith('data:image/') && Date.now() - t.timestamp < 24 * 60 * 60 * 1000).length;
   }, [texts]);
@@ -1197,6 +1198,12 @@ export default function App() {
               </>
             )}
             <div className="flex items-center gap-1 pointer-events-auto">
+              {pendingCount > 0 && (
+                <div className="flex items-center mx-2 gap-2 px-3 py-1 bg-yellow-500/20 text-yellow-500 rounded-full text-sm font-medium animate-pulse" title="يتم الرفع إلى القاعدة الآن... يرجى عدم إغلاق التطبيق">
+                  <span className="w-2 h-2 rounded-full bg-yellow-500"></span>
+                  جاري الرفع ({pendingCount})...
+                </div>
+              )}
               <span className="text-white/30 text-base font-medium px-1" title="عدد النصوص المضافة اليوم">
                 {recentTextAdditionsCount > 0 ? recentTextAdditionsCount : ''}
               </span>
