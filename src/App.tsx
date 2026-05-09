@@ -1942,7 +1942,7 @@ export default function App() {
                 type="file" 
                 multiple
                 accept="image/*" 
-                className={`absolute inset-0 w-full h-full opacity-0 cursor-pointer ${imagePreviews.length > 0 ? 'h-0 w-0' : ''}`}
+                className={`absolute inset-0 w-full h-full opacity-0 cursor-pointer ${imagePreviews.length > 0 ? 'hidden' : ''}`}
                 onChange={(e) => {
                   if (e.target.files && e.target.files.length > 0) {
                     handleImageFiles(Array.from(e.target.files));
@@ -1965,7 +1965,7 @@ export default function App() {
                 </div>
               ))}
               
-              {imagePreviews.length > 0 && (
+              {imagePreviews.length > 0 && imagePreviews.length < 10 && (
                 <div 
                   className="aspect-square bg-white/5 hover:bg-white/10 border border-dashed border-white/20 hover:border-white/40 rounded-xl flex flex-col items-center justify-center transition-all cursor-pointer group"
                   onClick={() => {
