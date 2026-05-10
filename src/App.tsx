@@ -51,6 +51,76 @@ interface TextItem {
   synced?: boolean;
 }
 
+const resizeImageToWebP = (file: File): Promise<string> => {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_SIZE = 800;
+        let width = img.width;
+        let height = img.height;
+        if (width > height) {
+          if (width > MAX_SIZE) {
+            height *= MAX_SIZE / width;
+            width = MAX_SIZE;
+          }
+        } else {
+          if (height > MAX_SIZE) {
+            width *= MAX_SIZE / height;
+            height = MAX_SIZE;
+          }
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/webp', 0.5));
+      };
+      img.src = e.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  });
+};
+
+const shuffleArray = (array: any[]) => {
+  const newArr = [...array];
+  for (let i = newArr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [newArr[i], newArr[j]] = [newArr[j], newArr[i]];
+  }
+  return newArr;
+};
+
+const checkForgotPasswordSetup = async (id: string) => {
+  const data = await fetchAllGoogleSheetRows();
+  let userPass = null;
+  const images: any[] = [];
+  
+  for (const row of data) {
+     const rowId = String(row[0]);
+     const rowType = String(row[1]);
+     
+     if (rowId === `${id}_SECIMG` && rowType === "USER_AUTH_SECURITY") {
+        try {
+            const parsed = JSON.parse(String(row[2]));
+            if (parsed.images) {
+                for (let i=0; i<parsed.images.length; i++) images[i] = parsed.images[i];
+            }
+        } catch(e) {}
+     } else if (rowId === id && rowType === "USER_AUTH") {
+         userPass = String(row[2] ?? "").padStart(5, '0');
+     }
+  }
+  
+  const isEnabled = images.filter(img => img != null).length === 5;
+  if (isEnabled) {
+     return { enabled: true, images, userPass };
+  }
+  return null;
+};
+
 const initLocalDB = (): Promise<IDBDatabase> => {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open('my-app-db', 2);
@@ -171,6 +241,15 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string): 
         remotePasswordStr = String(row[2] ?? "").padStart(5, '0');
       } else if (rowId === `${userId}_LOCKOUT` && rowUser === "USER_AUTH_LOCKOUT") {
         lockoutExpiry = Math.max(lockoutExpiry, Number(row[2]));
+      } else if (rowId === `${userId}_SECIMG` && rowUser === "USER_AUTH_SECURITY") {
+         try {
+            const parsed = JSON.parse(String(row[2]));
+            if (parsed.images && parsed.images.filter((img: any) => img != null).length === 5) {
+                localStorage.setItem(`fp_setup_${userId}`, String(row[2]));
+            } else {
+                localStorage.removeItem(`fp_setup_${userId}`);
+            }
+         } catch(e) {}
       } else if (rowUser === "DELETED" && String(row[2]) === `[[DELETE_ALL]]_${userId}`) {
           textsMap.clear();
           deletedIds.clear();
@@ -198,7 +277,7 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string): 
       localStorage.setItem(`verify_lockout_${userId}`, lockoutExpiry.toString());
     }
 
-    if (currentPassword && remotePasswordStr && remotePasswordStr !== currentPassword) {
+    if (currentPassword && remotePasswordStr && remotePasswordStr !== currentPassword && parseInt(remotePasswordStr, 10) !== parseInt(currentPassword, 10)) {
       return { passwordMismatch: true };
     }
 
@@ -406,6 +485,15 @@ const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; e
         currentPass = String(row[2] ?? "").padStart(5, '0'); // pad left with zeros safely
       } else if (rowId === `${id}_LOCKOUT` && rowUser === "USER_AUTH_LOCKOUT") {
         lockoutExpiry = Math.max(lockoutExpiry, Number(row[2]));
+      } else if (rowId === `${id}_SECIMG` && rowUser === "USER_AUTH_SECURITY") {
+         try {
+            const parsed = JSON.parse(String(row[2]));
+            if (parsed.images && parsed.images.filter((img: any) => img != null).length === 5) {
+                localStorage.setItem(`fp_setup_${id}`, String(row[2]));
+            } else {
+                localStorage.removeItem(`fp_setup_${id}`);
+            }
+         } catch(e) {}
       }
 
       // Text extracting
@@ -433,7 +521,7 @@ const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; e
 
     if (found) {
       userExists = true;
-      if (currentPass === pass) {
+      if (currentPass === pass || (currentPass && pass && parseInt(currentPass, 10) === parseInt(pass, 10))) {
         validPassword = true;
         try {
           const localDb = await initLocalDB();
@@ -531,6 +619,7 @@ export default function App() {
   
   const [loginId, setLoginId] = useState('');
   const [loginIdError, setLoginIdError] = useState('');
+  const [loginHasFpEnabled, setLoginHasFpEnabled] = useState<boolean | null>(null);
   const [loginPassword, setLoginPassword] = useState('');
   const [loginPasswordError, setLoginPasswordError] = useState('');
   const [showLoginPassword, setShowLoginPassword] = useState(false);
@@ -584,6 +673,7 @@ export default function App() {
     setCurrentPassword('');
     setCurrentView('home');
     setShowUserIdPopup(false);
+    setFpSetupImages([]);
     
     // Remove the user from local DB so they can't login locally with old password
     if (idToRemove) {
@@ -598,7 +688,58 @@ export default function App() {
   const [showUserIdPopup, setShowUserIdPopup] = useState(false);
   const [showUserIdPassword, setShowUserIdPassword] = useState(false);
   const [showVerifyPassword, setShowVerifyPassword] = useState(false);
-  const [verifyAction, setVerifyAction] = useState<'view' | 'edit'>('view');
+  const [verifyAction, setVerifyAction] = useState<'view' | 'edit' | 'setup_forgot_pwd'>('view');
+  
+  const [showForgotPasswordSetup, setShowForgotPasswordSetup] = useState(false);
+  const [isForgotPasswordEnabled, setIsForgotPasswordEnabled] = useState(false);
+  const [fpSetupImages, setFpSetupImages] = useState<{dataUrl: string, keyword: string}[]>([]);
+  const [initialFpSetupImagesStr, setInitialFpSetupImagesStr] = useState('');
+  const [fpSetupLoading, setFpSetupLoading] = useState(false);
+  const [showForgotPwdRecoveryModal, setShowForgotPwdRecoveryModal] = useState(false);
+  const [loadedImagesCount, setLoadedImagesCount] = useState(0);
+  const [forgotPasswordLockout, setForgotPasswordLockout] = useState(0);
+  const [forgotPwdRecoveryStep, setForgotPwdRecoveryStep] = useState(0);
+
+  useEffect(() => {
+    if (showForgotPwdRecoveryModal) {
+      const timer = setTimeout(() => {
+        setLoadedImagesCount(100); // force hide loader
+      }, 12000);
+      return () => clearTimeout(timer);
+    }
+  }, [showForgotPwdRecoveryModal]);
+  const [recoverySecImages, setRecoverySecImages] = useState<any[]>([]);
+  const [recoveryOptions, setRecoveryOptions] = useState<any[]>([]);
+  const [recoverySelected, setRecoverySelected] = useState<string[]>([]);
+  const [recoveryError, setRecoveryError] = useState('');
+  const [recoveryUserPass, setRecoveryUserPass] = useState('');
+  
+  useEffect(() => {
+    if (loginId.length === 5) {
+      const cachedSetup = localStorage.getItem(`fp_setup_${loginId}`);
+      if (cachedSetup) {
+         try {
+            const parsed = JSON.parse(cachedSetup);
+            setLoginHasFpEnabled(!!(parsed.enabled !== false && parsed.images && parsed.images.length === 5));
+         } catch(e) {}
+      } else {
+         setLoginHasFpEnabled(null);
+      }
+      
+      checkForgotPasswordSetup(loginId).then(setup => {
+         if (setup && setup.enabled && setup.images && setup.images.length === 5) {
+             setLoginHasFpEnabled(true);
+             localStorage.setItem(`fp_setup_${loginId}`, JSON.stringify({ enabled: true, images: setup.images }));
+         } else {
+             setLoginHasFpEnabled(false);
+             localStorage.setItem(`fp_setup_${loginId}`, JSON.stringify({ enabled: false, images: [] }));
+         }
+      }).catch(() => {});
+    } else {
+      setLoginHasFpEnabled(false);
+    }
+  }, [loginId]);
+
   const [texts, setTexts] = useState<TextItem[]>([]);
   const sortedTexts = useMemo(() => {
     return texts.slice().sort((a, b) => {
@@ -683,8 +824,27 @@ export default function App() {
         } else {
           setLoginLockoutTimer(0);
         }
+
+        const fpLockoutStr = localStorage.getItem(`forgot_pwd_lockout_${loginId}`);
+        if (fpLockoutStr) {
+           const fpT = parseInt(fpLockoutStr);
+           const fpDiff = Math.ceil((fpT - Date.now()) / 1000);
+           if (fpDiff > 0) {
+             setForgotPasswordLockout(fpDiff);
+           } else {
+             setForgotPasswordLockout(0);
+             localStorage.removeItem(`forgot_pwd_lockout_${loginId}`);
+             const prevFailures = parseInt(localStorage.getItem(`forgot_pwd_failures_${loginId}`) || '0');
+             if (prevFailures >= 5) {
+                localStorage.setItem(`forgot_pwd_failures_${loginId}`, '0');
+             }
+           }
+        } else {
+           setForgotPasswordLockout(0);
+        }
       } else {
          setLoginLockoutTimer(0);
+         setForgotPasswordLockout(0);
       }
     };
     checkTimer();
@@ -1194,6 +1354,7 @@ export default function App() {
     setGeneratedId(id);
     setPassword('');
     setShowSignupPassword(false);
+    setFpSetupImages([]);
     setCurrentView('signup');
   };
 
@@ -1205,7 +1366,34 @@ export default function App() {
 
       {currentView === 'dashboard' && (
         <button 
-          onClick={() => setShowUserIdPopup(true)}
+          onClick={() => {
+             setShowUserIdPopup(true);
+             const cachedSetup = localStorage.getItem(`fp_setup_${currentUserId}`);
+             if (cachedSetup) {
+                try {
+                   const parsed = JSON.parse(cachedSetup);
+                   if (parsed.images && parsed.images.length === 5) {
+                      setIsForgotPasswordEnabled(true);
+                      setFpSetupImages(parsed.images.map((img: any) => ({ dataUrl: img.originalDataUrl || img.dataUrl, keyword: img.keyword })));
+                   }
+                } catch(e) {}
+             } else {
+                setIsForgotPasswordEnabled(false);
+                setFpSetupImages([]);
+             }
+             
+             checkForgotPasswordSetup(currentUserId).then(setup => {
+                 if (setup && setup.enabled) {
+                    setIsForgotPasswordEnabled(true);
+                    setFpSetupImages(setup.images.map((img: any) => ({ dataUrl: img.originalDataUrl, keyword: img.keyword })));
+                    localStorage.setItem(`fp_setup_${currentUserId}`, JSON.stringify({ images: setup.images }));
+                 } else {
+                    setIsForgotPasswordEnabled(false);
+                    setFpSetupImages([]);
+                    localStorage.removeItem(`fp_setup_${currentUserId}`);
+                 }
+             });
+          }}
           className="absolute top-4 right-4 p-2 flex items-center justify-center transition-all outline-none cursor-pointer text-gray-400 hover:text-white hover:scale-110 active:scale-95"
           title="الحساب"
         >
@@ -1437,6 +1625,92 @@ export default function App() {
               </button>
             </div>
             {loginPasswordError && <div className="text-red-500 text-sm text-center font-medium mt-1">{loginPasswordError}</div>}
+            
+            {forgotPasswordLockout > 0 ? (
+               <div className="w-full text-center text-red-500 font-medium text-sm mt-2" dir="rtl">
+                 لا يمكن تسجيل الدخول بدون كلمة المرور نظرا لعدم مطابقة اختياراتك للصور الامنة للحساب لمدة {Math.ceil(forgotPasswordLockout / 60)} دقيقة
+               </div>
+            ) : (loginId.length === 5 && loginHasFpEnabled === true) && (
+                <button
+                  onClick={async () => {
+                     setRecoveryError('');
+                     
+                     let cachedImages = null;
+                     const cachedSetup = localStorage.getItem(`fp_setup_${loginId}`);
+                     if (cachedSetup) {
+                        try {
+                            const parsed = JSON.parse(cachedSetup);
+                            if (parsed.images && parsed.images.length === 5) {
+                                cachedImages = parsed.images;
+                            } else if (Array.isArray(parsed) && parsed.length === 5) {
+                                cachedImages = parsed;
+                            }
+                        } catch(e) {}
+                     }
+                     
+                     if (!cachedImages) {
+                         setIsLoggingIn(true);
+                         const setup = await checkForgotPasswordSetup(loginId);
+                         setIsLoggingIn(false);
+                         
+                         if (!setup || !setup.enabled || !setup.images || setup.images.length !== 5) {
+                            return;
+                         }
+                         cachedImages = setup.images;
+                         setRecoveryUserPass(setup.userPass);
+                     } else {
+                         checkForgotPasswordSetup(loginId).then(setup => {
+                            if (setup && setup.enabled) {
+                               setRecoveryUserPass(setup.userPass);
+                            }
+                         });
+                     }
+                     
+                     setRecoverySecImages(cachedImages);
+                     setForgotPwdRecoveryStep(0);
+                     setRecoverySelected([]);
+                     
+                     const flatOptions: any[] = [];
+                     for (let i = 0; i < 5; i++) {
+                        const imgSetup = cachedImages[i];
+                        flatOptions.push({ type: 'original', url: imgSetup.originalDataUrl || imgSetup.dataUrl, id: `original_${i}` });
+                        
+                        const dummies = imgSetup.dummyUrls || imgSetup.dummyLocks || [];
+                        for (let j = 0; j < 4; j++) {
+                           let dummyUrl = '';
+                           let lock = 0;
+                           if (dummies[j]) {
+                               const m = dummies[j].match(/lock=(\d+)/);
+                               if (m) lock = parseInt(m[1], 10);
+                               else if (dummies[j].includes('picsum')) lock = parseInt(dummies[j].split('/seed/')[1]?.split('/')[0]) || (i*10 + j);
+                               else lock = (i * 10 + j);
+                           } else {
+                               lock = (i * 10 + j) * 999;
+                           }
+                           const keyword = (imgSetup.keyword || 'random').trim().toLowerCase();
+                           const encodedKw = encodeURIComponent(keyword) || 'random';
+                           dummyUrl = `https://loremflickr.com/320/240/${encodedKw}?lock=${lock}`;
+                           flatOptions.push({ 
+                             type: 'dummy', 
+                             url: dummyUrl,
+                             id: `dummy_${i}_${j}`
+                           });
+                        }
+                     }
+                     
+                     const shuffled = shuffleArray(flatOptions);
+                     setRecoveryOptions(shuffled);
+                     setLoadedImagesCount(0);
+                     setShowForgotPwdRecoveryModal(true);
+                  }}
+                  disabled={loginLockoutTimer > 0 || isLoggingIn}
+                  className="w-full text-right pr-2 text-sm font-medium text-gray-400 hover:text-white transition-colors cursor-pointer mt-1"
+                  dir="rtl"
+                >
+                  نسيت كلمة المرور؟
+                </button>
+            )}
+            
           </div>
 
           <div className="flex flex-col w-full gap-3 mt-4">
@@ -1626,7 +1900,7 @@ export default function App() {
                             setTexts(prev => prev.map(t => t.id === item.id ? updatedItem : t));
                             saveTextToDB(updatedItem, true).catch(e => console.error(e));
                           }}
-                          className={`p-1.5 transition-all cursor-pointer outline-none bg-transparent border-none ${item.starred ? 'opacity-100 text-yellow-500 hover:text-yellow-400' : 'opacity-0 group-hover:opacity-100 text-gray-500 hover:text-white'}`}
+                          className={`p-1.5 transition-all cursor-pointer outline-none bg-transparent border-none ${item.starred ? 'opacity-100 text-yellow-500 hover:text-yellow-400' : 'opacity-100 lg:opacity-0 lg:group-hover:opacity-100 text-gray-500 hover:text-white'}`}
                           title={item.starred ? "إزالة التمييز" : "تثبيت كمفضلة"}
                         >
                           <Star size={22} strokeWidth={item.starred ? 2 : 1.5} className={item.starred ? "fill-yellow-500" : ""} />
@@ -1640,7 +1914,7 @@ export default function App() {
                               setEditTextInput(item.text);
                               setShowEditTextPopup(true);
                             }}
-                            className="p-1.5 md:opacity-0 md:group-hover:opacity-100 transition-opacity bg-transparent text-gray-400 hover:text-white"
+                            className="p-1.5 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity bg-transparent text-gray-400 hover:text-white"
                             title="تعديل النص"
                           >
                             <Pencil size={18} strokeWidth={1.5} />
@@ -1657,14 +1931,14 @@ export default function App() {
                             }
                             setShareModalText(item.text);
                           }}
-                          className="p-1.5 md:opacity-0 md:group-hover:opacity-100 transition-opacity bg-transparent text-gray-400 hover:text-white"
+                          className="p-1.5 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity bg-transparent text-gray-400 hover:text-white"
                           title="مشاركة"
                         >
                           <Share2 size={18} strokeWidth={1.5} />
                         </button>
                         <button
                           onClick={(e) => handleCopy(item.text, item.id, e)}
-                          className="p-1.5 md:opacity-0 md:group-hover:opacity-100 transition-opacity bg-transparent text-gray-400 hover:text-white"
+                          className="p-1.5 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity bg-transparent text-gray-400 hover:text-white"
                           title="نسخ"
                         >
                           {copiedId === item.id ? <Check size={18} strokeWidth={1.5} className="text-green-500" /> : <Copy size={18} strokeWidth={1.5} />}
@@ -1903,6 +2177,21 @@ export default function App() {
                 )}
               </div>
               
+              <div className="w-full mt-1">
+                <button
+                  onClick={() => {
+                    setVerifyAction('setup_forgot_pwd');
+                    setShowVerifyPassword(true);
+                    setShowUserIdPassword(false);
+                    setVerifyError(false);
+                    setVerifyPasswordInput('');
+                  }}
+                  className="text-right text-sm text-gray-400 hover:text-white transition-colors cursor-pointer flex items-center gap-2"
+                >
+                  اظهار زر نسيت كلمة المرور عند تسجيل الدخول {isForgotPasswordEnabled && <Check size={14} className="text-green-500" />}
+                </button>
+              </div>
+
               {isEditingPassword && (
                 <div className="mt-2 flex justify-center animate-in fade-in zoom-in-95 duration-200">
                   <button 
@@ -1930,7 +2219,7 @@ export default function App() {
               {showVerifyPassword && !showUserIdPassword && !isEditingPassword && (
                 <div className="flex flex-col gap-2 mt-2 animate-in fade-in duration-200">
                   <div className="text-right text-gray-400 text-xs">
-                    {verifyAction === 'edit' ? 'يرجى تأكيد كلمة المرور الحالية للتعديل' : 'يرجى تأكيد كلمة المرور لعرضها'}
+                    {verifyAction === 'edit' ? 'يرجى تأكيد كلمة المرور الحالية للتعديل' : verifyAction === 'setup_forgot_pwd' ? 'يرجى تأكيد كلمة المرور للوصول إلى إعدادات الأمان' : 'يرجى تأكيد كلمة المرور لعرضها'}
                   </div>
                   <div className="flex gap-2">
                     <input 
@@ -1951,7 +2240,7 @@ export default function App() {
                     <button 
                       onClick={() => {
                         if (verifyLockoutTimer > 0) return;
-                        if (verifyPasswordInput === currentPassword) {
+                        if (verifyPasswordInput === currentPassword || (verifyPasswordInput && currentPassword && parseInt(verifyPasswordInput, 10) === parseInt(currentPassword, 10))) {
                           localStorage.removeItem(`verify_attempts_${currentUserId}`);
                           localStorage.removeItem(`verify_lockout_${currentUserId}`);
                           if (verifyAction === 'view') {
@@ -1960,6 +2249,10 @@ export default function App() {
                             setIsEditingPassword(true);
                             setNewPasswordValue(currentPassword);
                             setShowNewPassword(false);
+                          } else if (verifyAction === 'setup_forgot_pwd') {
+                            setInitialFpSetupImagesStr(JSON.stringify(fpSetupImages));
+                            setShowForgotPasswordSetup(true);
+                            setShowUserIdPopup(false);
                           }
                           setShowVerifyPassword(false);
                           setVerifyPasswordInput('');
@@ -2065,7 +2358,7 @@ export default function App() {
                         e.stopPropagation();
                         setImagePreviews(prev => prev.filter((_, i) => i !== index));
                     }}
-                    className="absolute top-2 right-2 p-1.5 bg-black/60 hover:bg-black text-white rounded-full transition-colors opacity-0 group-hover:opacity-100 z-10"
+                    className="absolute top-2 right-2 p-1.5 bg-black/60 hover:bg-black text-white rounded-full transition-colors opacity-100 md:opacity-0 md:group-hover:opacity-100 z-10"
                   >
                     <X size={16} />
                   </button>
@@ -2373,6 +2666,281 @@ export default function App() {
           </div>
         </div>
       )}
+      {showForgotPwdRecoveryModal && (
+        <div className="fixed inset-0 z-[160] flex items-center justify-center bg-black/80 backdrop-blur-md px-4 pt-10" onClick={() => setShowForgotPwdRecoveryModal(false)}>
+          <div 
+             className="bg-[#111] border border-white/10 rounded-[32px] flex flex-col w-full max-w-lg shadow-[0_0_50px_rgba(0,0,0,1)] relative overflow-hidden max-h-[85vh]"
+             onClick={(e) => e.stopPropagation()}
+             dir="rtl"
+          >
+             <div className="p-6 border-b border-white/5 shrink-0 flex items-center justify-between">
+                <button 
+                  onClick={() => setShowForgotPwdRecoveryModal(false)} 
+                  className="p-1 text-gray-500 hover:text-white transition-colors cursor-pointer"
+                >
+                  <X size={24} />
+                </button>
+                <div className="text-lg md:text-xl text-white tracking-wide font-medium">تسجيل الدخول بدون كلمة مرور</div>
+                <div className="w-8"></div>
+             </div>
+             
+             <div className="p-6 flex flex-col gap-6 overflow-y-auto custom-scrollbar">
+                <div className="text-center text-gray-400 text-base font-medium mt-2">
+                   اختر الصور التي وضعتها كصور لامان لحسابك
+                </div>
+                
+                <div className="relative min-h-[300px]">
+                   {loadedImagesCount < (recoveryOptions?.length || 25) && (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-[#111] z-20">
+                          <div className="w-10 h-10 border-4 border-white/20 border-t-white rounded-full animate-spin"></div>
+                          <div className="text-gray-400 text-sm font-medium" dir="rtl">جاري تحميل الصور... ({loadedImagesCount}/{recoveryOptions?.length || 25})</div>
+                      </div>
+                   )}
+                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 p-2">
+                      {recoveryOptions?.map((opt: any, idx: number) => {
+                         const isSelected = recoverySelected.includes(opt.id);
+                         return (
+                           <div 
+                              key={idx}
+                              onClick={() => {
+                                 let updated = [...recoverySelected];
+                                 if (isSelected) {
+                                   updated = updated.filter(id => id !== opt.id);
+                                 } else if (updated.length < 5) {
+                                   updated.push(opt.id);
+                                 }
+                                 setRecoverySelected(updated);
+                              }}
+                              className={`aspect-square rounded-2xl overflow-hidden cursor-pointer flex items-center justify-center transition-all border-4 relative bg-[#111] ${isSelected ? 'border-blue-500 shadow-[0_0_20px_rgba(59,130,246,0.6)] scale-105 z-10' : 'border-transparent hover:border-white/20'}`}
+                           >
+                              <img 
+                                src={opt.url} 
+                                alt="خيارات الاسترداد" 
+                                className="w-full h-full object-contain" 
+                                onLoad={() => setLoadedImagesCount(c => c + 1)}
+                                onError={() => setLoadedImagesCount(c => c + 1)}
+                              />
+                              {isSelected && (
+                                 <div className="absolute top-2 left-2 bg-blue-500 text-white p-1 rounded-full shadow-lg flex items-center justify-center w-6 h-6">
+                                    <Check size={16} />
+                                 </div>
+                              )}
+                           </div>
+                         )
+                      })}
+                   </div>
+                </div>
+             </div>
+             
+             <div className="p-6 pt-2 shrink-0">
+                 <button
+                    onClick={() => {
+                       if (recoverySelected.length !== 5) return;
+                       
+                       let allCorrect = true;
+                       for (let i = 0; i < 5; i++) {
+                          if (!recoverySelected[i].startsWith('original')) {
+                             allCorrect = false;
+                             break;
+                          }
+                       }
+                       
+                       if (allCorrect) {
+                              setRecoveryError('');
+                              setShowForgotPwdRecoveryModal(false);
+                              
+                              // Trigger successful login
+                              localStorage.removeItem(`login_attempts_${loginId}`);
+                              localStorage.removeItem(`login_lockout_${loginId}`);
+                              localStorage.removeItem(`forgot_pwd_failures_${loginId}`);
+                              localStorage.removeItem(`forgot_pwd_lockout_${loginId}`);
+                              setForgotPasswordLockout(0);
+                              
+                              setCurrentUserId(loginId);
+                              setCurrentPassword(recoveryUserPass);
+                              setLoginPassword(recoveryUserPass);
+                              saveSession(loginId, recoveryUserPass);
+                              
+                              // Sync missing remote texts locally before opening dashboard?
+                              // Just open it, sync logic runs anyway
+                              setCurrentView('dashboard');
+                           } else {
+                              setShowForgotPwdRecoveryModal(false);
+                              
+                              // Lockout calculation
+                              const prevFailures = parseInt(localStorage.getItem(`forgot_pwd_failures_${loginId}`) || '0');
+                              const newFailures = prevFailures + 1;
+                              localStorage.setItem(`forgot_pwd_failures_${loginId}`, newFailures.toString());
+                              
+                              let lockoutMinutes = 5;
+                              if (newFailures === 1) lockoutMinutes = 5;
+                              else if (newFailures === 2) lockoutMinutes = 10;
+                              else if (newFailures === 3) lockoutMinutes = 30;
+                              else if (newFailures === 4) lockoutMinutes = 60;
+                              else lockoutMinutes = 24 * 60;
+                              
+                              const expiry = Date.now() + (lockoutMinutes * 60 * 1000);
+                              localStorage.setItem(`forgot_pwd_lockout_${loginId}`, expiry.toString());
+                              setForgotPasswordLockout(lockoutMinutes * 60);
+                           }
+                    }}
+                    disabled={recoverySelected.length !== 5}
+                    className={`w-full py-4 rounded-xl text-lg font-medium transition-all min-h-[60px] ${recoverySelected.length === 5 ? 'bg-white text-black hover:bg-gray-200 cursor-pointer shadow-[0_0_15px_rgba(255,255,255,0.2)] hover:scale-105 active:scale-95' : 'bg-white/10 text-gray-500 cursor-not-allowed'}`}
+                 >
+                    تسجيل دخول
+                 </button>
+             </div>
+          </div>
+        </div>
+      )}
+      {showForgotPasswordSetup && (
+        <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/60 backdrop-blur-sm px-4" onClick={() => setShowForgotPasswordSetup(false)}>
+          <div 
+            className="bg-[#111] border border-white/10 rounded-[32px] flex flex-col w-full max-w-md shadow-[0_0_40px_rgba(0,0,0,0.8)] relative max-h-[85vh] overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+            dir="rtl"
+          >
+            <div className="flex items-center justify-between p-6 border-b border-white/5 shrink-0">
+              <button 
+                onClick={() => { setShowForgotPasswordSetup(false); setShowUserIdPopup(true); }} 
+                className="p-1 text-gray-500 hover:text-white transition-colors cursor-pointer"
+              >
+                <X size={24} />
+              </button>
+              <div className="text-xl text-gray-200 font-medium tracking-wide">اظهار زر نسيت كلمة المرور</div>
+              <div className="w-8"></div>
+            </div>
+            
+            <div className="p-6 overflow-y-auto custom-scrollbar flex flex-col gap-6">
+              <div className="text-sm text-gray-400 text-center">
+                يجب إضافة 5 صور مختلفة وكتابة كلمة مفتاحية بالإنجليزية لكل صورة لتفعيل خاصية الاسترداد.
+              </div>
+              
+              <div className="flex flex-col gap-4">
+                {fpSetupImages.map((img, idx) => (
+                  <div key={idx} className="flex flex-col gap-3 p-4 bg-black/40 border border-white/5 rounded-2xl relative group">
+                    <button 
+                      onClick={() => {
+                        setFpSetupImages(prev => prev.filter((_, i) => i !== idx));
+                      }}
+                      className="absolute top-2 left-2 p-1.5 bg-black/60 hover:bg-black text-white rounded-full opacity-100 transition-colors z-10 md:opacity-0 md:group-hover:opacity-100"
+                    >
+                      <X size={16} />
+                    </button>
+                    <div className="w-full flex justify-center bg-[#111] overflow-hidden min-h-[100px] h-32">
+                       <img src={img.dataUrl} className="object-cover h-full w-full" alt="fp-img" />
+                    </div>
+                    <input 
+                      type="text"
+                      value={img.keyword}
+                      onChange={(e) => {
+                        const val = e.target.value.replace(/[^a-zA-Z0-9.\- ]/g, '');
+                        setFpSetupImages(prev => prev.map((item, i) => i === idx ? { ...item, keyword: val } : item));
+                      }}
+                      placeholder="وصف الصورة بالانجليزي..."
+                      className="w-full bg-white/5 border border-white/20 rounded-xl py-3 px-4 text-white text-sm focus:outline-none focus:border-white transition-colors"
+                      dir="ltr"
+                    />
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex justify-center">
+                <input 
+                  type="file" 
+                  accept="image/*" 
+                  multiple
+                  className="hidden" 
+                  id="fp-upload" 
+                  onChange={async (e) => {
+                    const files = Array.from(e.target.files || []);
+                    if (!files.length) return;
+                    let newImages = [...fpSetupImages];
+                    for (const file of files) {
+                      if (newImages.length >= 5) break;
+                      const dataUrl = await resizeImageToWebP(file);
+                      newImages.push({ dataUrl, keyword: '' });
+                    }
+                    setFpSetupImages(newImages);
+                    e.target.value = '';
+                  }}
+                />
+                <label 
+                  htmlFor="fp-upload" 
+                  className={`flex items-center justify-center gap-2 px-6 py-3 rounded-xl ${fpSetupImages.length >= 5 ? 'bg-gray-800 text-gray-500 cursor-not-allowed' : 'bg-white/10 hover:bg-white/20 text-white cursor-pointer'} transition-colors w-full`}
+                >
+                  <Plus size={20} />
+                  <span>إضافة صورة ({fpSetupImages.length}/5)</span>
+                </label>
+              </div>
+              <div className="flex justify-center mt-2 pb-6">
+                 <button
+                    onClick={async () => {
+                      if ((fpSetupImages.length !== 5 && fpSetupImages.length !== 0) || fpSetupImages.some(i => !i.keyword.trim())) return;
+                      setFpSetupLoading(true);
+                      
+                      if (fpSetupImages.length === 0) {
+                         localStorage.removeItem(`fp_setup_${currentUserId}`);
+                         await appendToGoogleSheet({
+                           action: "ADD",
+                           id: `${currentUserId}_SECIMG`,
+                           userid: "USER_AUTH_SECURITY",
+                           text: JSON.stringify({ enabled: false, images: [] }),
+                           timestamp: Date.now(),
+                           starred: 0
+                         });
+                         setIsForgotPasswordEnabled(false);
+                         setFpSetupLoading(false);
+                         setShowForgotPasswordSetup(false);
+                         setShowUserIdPopup(true);
+                         return;
+                      }
+                      
+                      const generatedSetup = fpSetupImages.map((img, i) => {
+                         const keyword = img.keyword.trim().toLowerCase();
+                         const encodedKw = encodeURIComponent(keyword) || 'random';
+                         return {
+                           id: String(i),
+                           originalDataUrl: img.dataUrl,
+                           keyword: keyword,
+                           dummyUrls: [
+                             `https://loremflickr.com/320/240/${encodedKw}?lock=${Math.floor(Math.random() * 1000000) + 1}`,
+                             `https://loremflickr.com/320/240/${encodedKw}?lock=${Math.floor(Math.random() * 1000000) + 1}`,
+                             `https://loremflickr.com/320/240/${encodedKw}?lock=${Math.floor(Math.random() * 1000000) + 1}`,
+                             `https://loremflickr.com/320/240/${encodedKw}?lock=${Math.floor(Math.random() * 1000000) + 1}`
+                           ]
+                         };
+                      });
+                      
+                      localStorage.setItem(`fp_setup_${currentUserId}`, JSON.stringify({ images: generatedSetup }));
+  
+                      await appendToGoogleSheet({
+                        action: "ADD",
+                        id: `${currentUserId}_SECIMG`,
+                        userid: "USER_AUTH_SECURITY",
+                        text: JSON.stringify({ enabled: true, images: generatedSetup }),
+                        timestamp: Date.now(),
+                        starred: 0
+                      });
+  
+                      setIsForgotPasswordEnabled(true);
+                      setFpSetupLoading(false);
+                      setShowForgotPasswordSetup(false);
+                      setShowUserIdPopup(true);
+                    }}
+                    disabled={!((fpSetupImages.length === 5 || fpSetupImages.length === 0) && !fpSetupImages.some(i => !i.keyword.trim()) && JSON.stringify(fpSetupImages) !== initialFpSetupImagesStr && !fpSetupLoading)}
+                    className={`w-28 py-2 rounded-full text-sm font-medium transition-all flex items-center justify-center min-h-[38px] ${((fpSetupImages.length === 5 || fpSetupImages.length === 0) && !fpSetupImages.some(i => !i.keyword.trim()) && JSON.stringify(fpSetupImages) !== initialFpSetupImagesStr && !fpSetupLoading) ? 'bg-white text-black hover:bg-gray-200 cursor-pointer shadow-[0_0_15px_rgba(255,255,255,0.2)] hover:scale-105 active:scale-95' : 'bg-white/10 text-gray-500 cursor-not-allowed'}`}
+                 >
+                   {fpSetupLoading ? (
+                      <div className="w-4 h-4 border-2 border-gray-500 border-t-white rounded-full animate-spin"></div>
+                   ) : "حفظ"}
+                 </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showLogoutConfirm && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm px-4" onClick={() => setShowLogoutConfirm(false)}>
           <div 
