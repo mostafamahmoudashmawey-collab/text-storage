@@ -1498,6 +1498,14 @@ export default function App() {
                         localStorage.setItem(`login_attempts_${loginId}`, attempts.toString());
                         setLoginPasswordError(`عذرا كلمة المرور خاطئة (يتبقى ${5 - attempts} محاولات)`);
                       }
+                    } else if (result.error === 'تم الحظر مؤقتا يرجى الانتظار') {
+                      setLoginPasswordError(result.error);
+                      const lockoutStr = localStorage.getItem(`login_lockout_${loginId}`);
+                      if (lockoutStr) {
+                        const t = parseInt(lockoutStr);
+                        const diff = Math.ceil((t - Date.now()) / 1000);
+                        if (diff > 0) setLoginLockoutTimer(diff);
+                      }
                     } else {
                       alert(result.error);
                     }
@@ -1991,7 +1999,7 @@ export default function App() {
                   </div>
                   {(verifyError || verifyLockoutTimer > 0) && (
                     <div className="text-red-400 text-xs text-right animate-in fade-in zoom-in-95 duration-200">
-                      {verifyLockoutTimer > 0 ? `يرجى الانتظار ${verifyLockoutTimer} ثانية` : verifyErrorMsg || 'كلمة المرور خاطئة'}
+                      {verifyLockoutTimer > 0 ? `تم الحظر مؤقتا يرجى الانتظار ${verifyLockoutTimer} ثانية` : verifyErrorMsg || 'كلمة المرور خاطئة'}
                     </div>
                   )}
                 </div>
