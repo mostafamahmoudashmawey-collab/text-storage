@@ -645,6 +645,60 @@ export default function App() {
   
   const [expandedLengths, setExpandedLengths] = useState<Record<string, number>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const [loginLockoutTimer, setLoginLockoutTimer] = useState(0);
+  useEffect(() => {
+    const checkTimer = () => {
+      if (loginId) {
+        const lockoutStr = localStorage.getItem(`login_lockout_${loginId}`);
+        if (lockoutStr) {
+          const t = parseInt(lockoutStr);
+          const diff = Math.ceil((t - Date.now()) / 1000);
+          if (diff > 0) {
+            setLoginLockoutTimer(diff);
+          } else {
+            setLoginLockoutTimer(0);
+            localStorage.removeItem(`login_lockout_${loginId}`);
+          }
+        } else {
+          setLoginLockoutTimer(0);
+        }
+      } else {
+         setLoginLockoutTimer(0);
+      }
+    };
+    checkTimer();
+    const interval = setInterval(checkTimer, 1000);
+    return () => clearInterval(interval);
+  }, [loginId]);
+
+  const [verifyLockoutTimer, setVerifyLockoutTimer] = useState(0);
+  const [verifyErrorMsg, setVerifyErrorMsg] = useState('');
+  useEffect(() => {
+    const checkTimer = () => {
+      if (currentUserId) {
+        const lockoutStr = localStorage.getItem(`verify_lockout_${currentUserId}`);
+        if (lockoutStr) {
+          const t = parseInt(lockoutStr);
+          const diff = Math.ceil((t - Date.now()) / 1000);
+          if (diff > 0) {
+            setVerifyLockoutTimer(diff);
+          } else {
+            setVerifyLockoutTimer(0);
+            localStorage.removeItem(`verify_lockout_${currentUserId}`);
+          }
+        } else {
+          setVerifyLockoutTimer(0);
+        }
+      } else {
+        setVerifyLockoutTimer(0);
+      }
+    };
+    checkTimer();
+    const interval = setInterval(checkTimer, 1000);
+    return () => clearInterval(interval);
+  }, [currentUserId]);
+
   const [shareModalText, setShareModalText] = useState<string | null>(null);
   const [viewedItem, setViewedItem] = useState<TextItem | null>(null);
   const [isRecording, setIsRecording] = useState(false);
@@ -1368,35 +1422,33 @@ export default function App() {
           <div className="flex flex-col w-full gap-3 mt-4">
             <button 
               onClick={() => {
-                if (isLoggingIn) return;
+                if (isLoggingIn || loginLockoutTimer > 0) return;
                 setIsLoggingIn(true);
                 setLoginIdError('');
                 setLoginPasswordError('');
                 
                 (async () => {
                   // Run login check
-                  const result = await loginUser(loginId, loginPassword);
+                  let result = await loginUser(loginId, loginPassword);
                   
                   // If login is valid, and we haven't synced texts during a remote login fallback, sync texts now!
                   if (result.isValid && !result.syncedTexts) {
                      const syncRes = await syncTextsFromRemoteDB(loginId, loginPassword);
                      if (syncRes && syncRes.passwordMismatch) {
-                       setIsLoggingIn(false);
-                       setLoginPasswordError('كلمة المرور خطا');
-                       
+                       result = { isValid: false, error: 'كلمة المرور خطا' };
                        // Wipe the stale local db entry
                        initLocalDB().then(db => {
                           const tx = db.transaction('users', 'readwrite');
                           tx.objectStore('users').delete(loginId);
                        }).catch(() => {});
-                       
-                       return;
                      }
                   }
                   
                   setIsLoggingIn(false);
                   
                   if (result.isValid) {
+                    localStorage.removeItem(`login_attempts_${loginId}`);
+                    localStorage.removeItem(`login_lockout_${loginId}`);
                     setCurrentUserId(loginId);
                     setCurrentPassword(loginPassword);
                     saveSession(loginId, loginPassword);
@@ -1405,20 +1457,33 @@ export default function App() {
                     if (result.error === 'لا يوجد المعرف') {
                       setLoginIdError('عذرا هذا المعرف غير موجود');
                     } else if (result.error === 'كلمة المرور خطا') {
-                      setLoginPasswordError('عذرا كلمة المرور خاطئة');
+                      const attemptsStr = localStorage.getItem(`login_attempts_${loginId}`);
+                      let attempts = attemptsStr ? parseInt(attemptsStr) : 0;
+                      attempts += 1;
+                      if (attempts >= 5) {
+                        localStorage.setItem(`login_lockout_${loginId}`, (Date.now() + 300000).toString());
+                        localStorage.setItem(`login_attempts_${loginId}`, "0");
+                        setLoginLockoutTimer(300);
+                        setLoginPasswordError('تم الحظر مؤقتا يرجى الانتظار');
+                      } else {
+                        localStorage.setItem(`login_attempts_${loginId}`, attempts.toString());
+                        setLoginPasswordError(`عذرا كلمة المرور خاطئة (يتبقى ${5 - attempts} محاولات)`);
+                      }
                     } else {
                       alert(result.error);
                     }
                   }
                 })();
               }}
-              disabled={loginId.length !== 5 || loginPassword.length !== 5 || isLoggingIn}
-              className={`w-full font-medium py-3 px-8 rounded-full shadow-[0_0_15px_rgba(255,255,255,0.2)] transition-all tracking-wide ${loginId.length === 5 && loginPassword.length === 5 && !isLoggingIn ? 'bg-white hover:bg-gray-100 text-black cursor-pointer hover:scale-105 active:scale-95' : 'bg-transparent border border-gray-600 text-gray-500 cursor-not-allowed'} flex flex-col items-center justify-center min-h-[56px]`}
+              disabled={loginId.length !== 5 || loginPassword.length !== 5 || isLoggingIn || loginLockoutTimer > 0}
+              className={`w-full font-medium py-3 px-8 rounded-full shadow-[0_0_15px_rgba(255,255,255,0.2)] transition-all tracking-wide ${loginId.length === 5 && loginPassword.length === 5 && !isLoggingIn && loginLockoutTimer === 0 ? 'bg-white hover:bg-gray-100 text-black cursor-pointer hover:scale-105 active:scale-95' : 'bg-transparent border border-gray-600 text-gray-500 cursor-not-allowed'} flex flex-col items-center justify-center min-h-[56px]`}
             >
               {isLoggingIn ? (
                 <div className="flex flex-col items-center justify-center pt-1">
                   <div className="w-5 h-5 border-2 border-gray-500 border-t-white rounded-full animate-spin"></div>
                 </div>
+              ) : loginLockoutTimer > 0 ? (
+                <span className="text-lg">انتظر {loginLockoutTimer} ثانية</span>
               ) : (
                 <span className="text-lg">دخول</span>
               )}
@@ -1834,9 +1899,11 @@ export default function App() {
                     <input 
                       type="password"
                       value={verifyPasswordInput}
+                      disabled={verifyLockoutTimer > 0}
                       onChange={(e) => {
                         setVerifyPasswordInput(e.target.value.replace(/[^0-9]/g, ''));
                         setVerifyError(false);
+                        setVerifyErrorMsg('');
                       }}
                       maxLength={5}
                       className={`flex-1 bg-white/5 border rounded-xl p-3 text-center text-xl tracking-[0.5em] text-white focus:outline-none transition-colors font-mono ${verifyError ? 'border-red-500/50 focus:border-red-500' : 'border-white/20 focus:border-white'}`}
@@ -1846,7 +1913,10 @@ export default function App() {
                     />
                     <button 
                       onClick={() => {
+                        if (verifyLockoutTimer > 0) return;
                         if (verifyPasswordInput === currentPassword) {
+                          localStorage.removeItem(`verify_attempts_${currentUserId}`);
+                          localStorage.removeItem(`verify_lockout_${currentUserId}`);
                           if (verifyAction === 'view') {
                             setShowUserIdPassword(true);
                           } else if (verifyAction === 'edit') {
@@ -1857,19 +1927,33 @@ export default function App() {
                           setShowVerifyPassword(false);
                           setVerifyPasswordInput('');
                           setVerifyError(false);
+                          setVerifyErrorMsg('');
                         } else {
+                          const attemptsStr = localStorage.getItem(`verify_attempts_${currentUserId}`);
+                          let attempts = attemptsStr ? parseInt(attemptsStr) : 0;
+                          attempts += 1;
+                          if (attempts >= 5) {
+                            localStorage.setItem(`verify_lockout_${currentUserId}`, (Date.now() + 300000).toString());
+                            localStorage.setItem(`verify_attempts_${currentUserId}`, "0");
+                            setVerifyLockoutTimer(300);
+                            setVerifyErrorMsg('تم الحظر مؤقتا يرجى الانتظار');
+                          } else {
+                            localStorage.setItem(`verify_attempts_${currentUserId}`, attempts.toString());
+                            setVerifyErrorMsg(`كلمة المرور خاطئة (يتبقى ${5 - attempts} محاولات)`);
+                          }
                           setVerifyPasswordInput('');
                           setVerifyError(true);
                         }
                       }}
-                      className="bg-transparent text-gray-400 hover:text-white px-3 text-sm font-medium cursor-pointer transition-colors outline-none"
+                      disabled={verifyLockoutTimer > 0}
+                      className={`bg-transparent px-3 text-sm font-medium transition-colors outline-none ${verifyLockoutTimer > 0 ? 'text-gray-600 cursor-not-allowed' : 'text-gray-400 hover:text-white cursor-pointer'}`}
                     >
-                      تأكيد
+                      {verifyLockoutTimer > 0 ? 'محظور' : 'تأكيد'}
                     </button>
                   </div>
-                  {verifyError && (
+                  {(verifyError || verifyLockoutTimer > 0) && (
                     <div className="text-red-400 text-xs text-right animate-in fade-in zoom-in-95 duration-200">
-                      كلمة المرور خاطئة
+                      {verifyLockoutTimer > 0 ? `يرجى الانتظار ${verifyLockoutTimer} ثانية` : verifyErrorMsg || 'كلمة المرور خاطئة'}
                     </div>
                   )}
                 </div>
