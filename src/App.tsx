@@ -557,31 +557,6 @@ export default function App() {
   const [showUserIdPassword, setShowUserIdPassword] = useState(false);
   const [showVerifyPassword, setShowVerifyPassword] = useState(false);
   const [verifyAction, setVerifyAction] = useState<'view' | 'edit'>('view');
-  const [verifyPasswordInput, setVerifyPasswordInput] = useState('');
-  const [verifyError, setVerifyError] = useState(false);
-  const [isEditingPassword, setIsEditingPassword] = useState(false);
-  const [newPasswordValue, setNewPasswordValue] = useState('');
-  const [showAddTextPopup, setShowAddTextPopup] = useState(false);
-  const [showAddImagePopup, setShowAddImagePopup] = useState(false);
-  const [imagePreviews, setImagePreviews] = useState<string[]>([]);
-  const [imageCooldownRemaining, setImageCooldownRemaining] = useState(0);
-
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout>;
-    if (imageCooldownRemaining > 0) {
-      timer = setTimeout(() => setImageCooldownRemaining(prev => prev - 1), 1000);
-    }
-    return () => {
-      if (timer) clearTimeout(timer);
-    };
-  }, [imageCooldownRemaining]);
-
-  const [showEditTextPopup, setShowEditTextPopup] = useState(false);
-  const [editTextItem, setEditTextItem] = useState<TextItem | null>(null);
-  const [showNewPassword, setShowNewPassword] = useState(false);
-  const [newText, setNewText] = useState('');
-  const [editTextInput, setEditTextInput] = useState('');
-  
   const [texts, setTexts] = useState<TextItem[]>([]);
   const sortedTexts = useMemo(() => {
     return texts.slice().sort((a, b) => {
@@ -594,10 +569,58 @@ export default function App() {
   const recentTextAdditionsCount = useMemo(() => {
     return texts.filter(t => !t.text.startsWith('data:image/') && Date.now() - t.timestamp < 24 * 60 * 60 * 1000).length;
   }, [texts]);
-  
   const recentImageAdditionsCount = useMemo(() => {
     return texts.filter(t => t.text.startsWith('data:image/') && Date.now() - t.timestamp < 24 * 60 * 60 * 1000).length;
   }, [texts]);
+
+  const [verifyPasswordInput, setVerifyPasswordInput] = useState('');
+  const [verifyError, setVerifyError] = useState(false);
+  const [isEditingPassword, setIsEditingPassword] = useState(false);
+  const [newPasswordValue, setNewPasswordValue] = useState('');
+  const [showAddTextPopup, setShowAddTextPopup] = useState(false);
+  const [showAddImagePopup, setShowAddImagePopup] = useState(false);
+  const [imagePreviews, setImagePreviews] = useState<string[]>([]);
+  const [imageCooldownRemaining, setImageCooldownRemaining] = useState(0);
+
+  useEffect(() => {
+    const checkCooldown = () => {
+      if (!currentUserId || texts.length === 0) {
+        setImageCooldownRemaining(0);
+        return;
+      }
+      // Get all images for the current user
+      const userImages = texts.filter(t => t.userId === currentUserId && t.text.startsWith('data:image/'));
+      if (userImages.length === 0) {
+        setImageCooldownRemaining(0);
+        return;
+      }
+      
+      // Find the most recently added image
+      const latestImage = userImages.reduce((prev, current) => (prev.timestamp > current.timestamp) ? prev : current);
+      const timeElapsed = Date.now() - latestImage.timestamp;
+      
+      // 15 seconds cooldown
+      if (timeElapsed >= 0 && timeElapsed < 15000) {
+        setImageCooldownRemaining(Math.ceil((15000 - timeElapsed) / 1000));
+      } else if (timeElapsed < 0 && timeElapsed > -15000) {
+        // Handle slight clock mismatch where someone else's clock is ahead
+        setImageCooldownRemaining(Math.ceil(15 - (timeElapsed / 1000)));
+      } else {
+        setImageCooldownRemaining(0);
+      }
+    };
+
+    checkCooldown();
+    const interval = setInterval(checkCooldown, 1000);
+    return () => clearInterval(interval);
+  }, [texts, currentUserId]);
+
+  const [showEditTextPopup, setShowEditTextPopup] = useState(false);
+  const [editTextItem, setEditTextItem] = useState<TextItem | null>(null);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [newText, setNewText] = useState('');
+  const [editTextInput, setEditTextInput] = useState('');
+  
   const [expandedLengths, setExpandedLengths] = useState<Record<string, number>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [shareModalText, setShareModalText] = useState<string | null>(null);
@@ -1946,7 +1969,6 @@ export default function App() {
                          console.error("Failed to upload image item", e);
                       }
                     }));
-                    setImageCooldownRemaining(15);
                   })();
                 }} 
                 id="add-all-btn"
