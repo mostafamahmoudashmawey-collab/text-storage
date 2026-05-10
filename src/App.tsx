@@ -160,6 +160,7 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string): 
     let deleteAllMarkerTime = 0;
     
     let remotePasswordStr: string | null = null;
+    let lockoutExpiry = 0;
 
     // Process items sequentially to always keep the latest version.
     for (const row of data) {
@@ -168,6 +169,8 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string): 
       
       if (rowId === userId && rowUser === "USER_AUTH") {
         remotePasswordStr = String(row[2] ?? "").padStart(5, '0');
+      } else if (rowId === `${userId}_LOCKOUT` && rowUser === "USER_AUTH_LOCKOUT") {
+        lockoutExpiry = Math.max(lockoutExpiry, Number(row[2]));
       } else if (rowUser === "DELETED" && String(row[2]) === `[[DELETE_ALL]]_${userId}`) {
           textsMap.clear();
           deletedIds.clear();
@@ -188,6 +191,11 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string): 
             deletedIds.delete(rowId);
         }
       }
+    }
+
+    if (lockoutExpiry > Date.now()) {
+      localStorage.setItem(`login_lockout_${userId}`, lockoutExpiry.toString());
+      localStorage.setItem(`verify_lockout_${userId}`, lockoutExpiry.toString());
     }
 
     if (currentPassword && remotePasswordStr && remotePasswordStr !== currentPassword) {
@@ -380,14 +388,11 @@ const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; e
     console.error("Local login error", e);
   }
 
-  if (validPassword) {
-    return { isValid: true };
-  }
-
   try {
     const data = await fetchAllGoogleSheetRows();
     let currentPass = null;
     let found = false;
+    let lockoutExpiry = 0;
     
     const textsMap = new Map<string, TextItem>();
 
@@ -399,6 +404,8 @@ const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; e
       if (rowId === id && rowUser === "USER_AUTH") {
         found = true;
         currentPass = String(row[2] ?? "").padStart(5, '0'); // pad left with zeros safely
+      } else if (rowId === `${id}_LOCKOUT` && rowUser === "USER_AUTH_LOCKOUT") {
+        lockoutExpiry = Math.max(lockoutExpiry, Number(row[2]));
       }
 
       // Text extracting
@@ -416,6 +423,12 @@ const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; e
             });
         }
       }
+    }
+
+    if (lockoutExpiry > Date.now()) {
+      localStorage.setItem(`login_lockout_${id}`, lockoutExpiry.toString());
+      localStorage.setItem(`verify_lockout_${id}`, lockoutExpiry.toString());
+      return { isValid: false, error: 'تم الحظر مؤقتا يرجى الانتظار' };
     }
 
     if (found) {
@@ -457,19 +470,26 @@ const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; e
         }
         
         return { isValid: true, syncedTexts: remoteTexts };
+      } else {
+        validPassword = false;
       }
+    } else if (validPassword) {
+      return { isValid: true };
     }
   } catch (e) {
     console.error("Google Sheets login error", e);
+    if (validPassword) {
+      return { isValid: true };
+    }
   }
   
-  if (validPassword) {
-    return { isValid: true };
-  } else if (!userExists) {
+  if (!userExists) {
     return { isValid: false, error: 'لا يوجد المعرف' };
-  } else {
+  } else if (!validPassword) {
     return { isValid: false, error: 'كلمة المرور خطا' };
   }
+  
+  return { isValid: false, error: 'حدث خطأ غير معروف' };
 };
 
 const updatePasswordInDB = async (id: string, newPass: string) => {
@@ -1461,10 +1481,19 @@ export default function App() {
                       let attempts = attemptsStr ? parseInt(attemptsStr) : 0;
                       attempts += 1;
                       if (attempts >= 5) {
-                        localStorage.setItem(`login_lockout_${loginId}`, (Date.now() + 300000).toString());
+                        const expiry = Date.now() + 300000;
+                        localStorage.setItem(`login_lockout_${loginId}`, expiry.toString());
                         localStorage.setItem(`login_attempts_${loginId}`, "0");
                         setLoginLockoutTimer(300);
                         setLoginPasswordError('تم الحظر مؤقتا يرجى الانتظار');
+                        appendToGoogleSheet({
+                          action: "ADD",
+                          id: `${loginId}_LOCKOUT`,
+                          userid: "USER_AUTH_LOCKOUT",
+                          text: expiry.toString(),
+                          timestamp: Date.now(),
+                          starred: 0
+                        }).catch(e => console.error(e));
                       } else {
                         localStorage.setItem(`login_attempts_${loginId}`, attempts.toString());
                         setLoginPasswordError(`عذرا كلمة المرور خاطئة (يتبقى ${5 - attempts} محاولات)`);
@@ -1933,10 +1962,19 @@ export default function App() {
                           let attempts = attemptsStr ? parseInt(attemptsStr) : 0;
                           attempts += 1;
                           if (attempts >= 5) {
-                            localStorage.setItem(`verify_lockout_${currentUserId}`, (Date.now() + 300000).toString());
+                            const expiry = Date.now() + 300000;
+                            localStorage.setItem(`verify_lockout_${currentUserId}`, expiry.toString());
                             localStorage.setItem(`verify_attempts_${currentUserId}`, "0");
                             setVerifyLockoutTimer(300);
                             setVerifyErrorMsg('تم الحظر مؤقتا يرجى الانتظار');
+                            appendToGoogleSheet({
+                              action: "ADD",
+                              id: `${currentUserId}_LOCKOUT`,
+                              userid: "USER_AUTH_LOCKOUT",
+                              text: expiry.toString(),
+                              timestamp: Date.now(),
+                              starred: 0
+                            }).catch(e => console.error(e));
                           } else {
                             localStorage.setItem(`verify_attempts_${currentUserId}`, attempts.toString());
                             setVerifyErrorMsg(`كلمة المرور خاطئة (يتبقى ${5 - attempts} محاولات)`);
