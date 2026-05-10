@@ -152,36 +152,48 @@ const getTextsFromLocalDB = async (userId: string): Promise<TextItem[]> => {
   return texts;
 };
 
-const syncTextsFromRemoteDB = async (userId: string) => {
+const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string): Promise<{ passwordMismatch?: boolean } | void> => {
   try {
     const data = await fetchAllGoogleSheetRows();
     const textsMap = new Map<string, TextItem>();
     const deletedIds = new Set<string>();
     let deleteAllMarkerTime = 0;
     
+    let remotePasswordStr: string | null = null;
+
     // Process items sequentially to always keep the latest version.
     for (const row of data) {
-      if (String(row[1]) === "DELETED" && String(row[2]) === `[[DELETE_ALL]]_${userId}`) {
+      const rowId = String(row[0]);
+      const rowUser = String(row[1]);
+      
+      if (rowId === userId && rowUser === "USER_AUTH") {
+        remotePasswordStr = String(row[2] ?? "").padStart(5, '0');
+      } else if (rowUser === "DELETED" && String(row[2]) === `[[DELETE_ALL]]_${userId}`) {
           textsMap.clear();
           deletedIds.clear();
           deleteAllMarkerTime = Number(row[3]);
-      } else if (String(row[1]) === String(userId) || String(row[1]) === "DELETED") {
-        if (Number(row[4]) === -1 || String(row[2]) === "[[DELETED]]" || String(row[1]) === "DELETED") {
-            textsMap.delete(String(row[0]));
-            deletedIds.add(String(row[0]));
-        } else if (String(row[1]) === String(userId)) {
-            textsMap.set(String(row[0]), {
-                id: String(row[0]),
-                userId: String(row[1]),
+      } else if (rowUser === String(userId) || rowUser === "DELETED") {
+        if (Number(row[4]) === -1 || String(row[2]) === "[[DELETED]]" || rowUser === "DELETED") {
+            textsMap.delete(rowId);
+            deletedIds.add(rowId);
+        } else if (rowUser === String(userId)) {
+            textsMap.set(rowId, {
+                id: rowId,
+                userId: rowUser,
                 text: String(row[2]),
                 timestamp: Number(row[3]),
                 starred: Number(row[4]) === 1,
                 synced: true
             });
-            deletedIds.delete(String(row[0]));
+            deletedIds.delete(rowId);
         }
       }
     }
+
+    if (currentPassword && remotePasswordStr && remotePasswordStr !== currentPassword) {
+      return { passwordMismatch: true };
+    }
+
     
     const remoteTexts = Array.from(textsMap.values()).sort((a, b) => b.timestamp - a.timestamp);
     
@@ -545,12 +557,22 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    const idToRemove = currentUserId;
     localStorage.removeItem('userSession');
     localStorage.setItem('explicitLogout', 'true');
     setCurrentUserId('');
     setCurrentPassword('');
     setCurrentView('home');
     setShowUserIdPopup(false);
+    
+    // Remove the user from local DB so they can't login locally with old password
+    if (idToRemove) {
+      initLocalDB().then(localDb => {
+        const tx = localDb.transaction('users', 'readwrite');
+        const store = tx.objectStore('users');
+        store.delete(idToRemove);
+      }).catch(() => {});
+    }
   };
 
   const [showUserIdPopup, setShowUserIdPopup] = useState(false);
@@ -980,7 +1002,11 @@ export default function App() {
         if (isSyncing) return;
         isSyncing = true;
         try {
-          await syncTextsFromRemoteDB(currentUserId);
+          const res = await syncTextsFromRemoteDB(currentUserId, currentPassword);
+          if (res && res.passwordMismatch) {
+            handleLogout();
+            return;
+          }
           await fetchFromLocal();
         } catch (e) {
           console.error(e);
@@ -1039,7 +1065,7 @@ export default function App() {
         window.removeEventListener('local_item_synced', onLocalItemSynced);
       };
     }
-  }, [currentView, currentUserId]);
+  }, [currentView, currentUserId, currentPassword]);
 
   const generateUniqueId = async () => {
     return Math.floor(10000 + Math.random() * 90000).toString();
@@ -1353,7 +1379,19 @@ export default function App() {
                   
                   // If login is valid, and we haven't synced texts during a remote login fallback, sync texts now!
                   if (result.isValid && !result.syncedTexts) {
-                     await syncTextsFromRemoteDB(loginId);
+                     const syncRes = await syncTextsFromRemoteDB(loginId, loginPassword);
+                     if (syncRes && syncRes.passwordMismatch) {
+                       setIsLoggingIn(false);
+                       setLoginPasswordError('كلمة المرور خطا');
+                       
+                       // Wipe the stale local db entry
+                       initLocalDB().then(db => {
+                          const tx = db.transaction('users', 'readwrite');
+                          tx.objectStore('users').delete(loginId);
+                       }).catch(() => {});
+                       
+                       return;
+                     }
                   }
                   
                   setIsLoggingIn(false);
