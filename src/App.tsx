@@ -3,17 +3,34 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Eye, EyeOff, Plus, User, Trash2, Pencil, Copy, Check, X, Star, Share2, Mic, Image as ImageIcon, UploadCloud } from 'lucide-react';
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { Eye, EyeOff, Plus, User, Trash2, Pencil, Copy, Check, X, Star, Share2, Mic, Image as ImageIcon, UploadCloud, Bell, Send, ShieldAlert, Moon, Sun } from 'lucide-react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 
 const GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbyiEns9GDoPmwDTKM7WdmMghaKrB_K_QQ2CBuW__0CyZC2GS-axQOSC0H4WrUoW2A2xPQ/exec";
 
 // Fetch all rows from the Google Sheet
-const fetchAllGoogleSheetRows = async () => {
-  const res = await fetch(GOOGLE_SHEETS_URL, { method: "GET" });
-  if (!res.ok) throw new Error("Failed to fetch Google Sheet");
-  const data: any[][] = await res.json();
-  return data;
+const fetchAllGoogleSheetRows = async (retryCount = 0): Promise<any[][]> => {
+  try {
+    const urlParams = new URLSearchParams({ t: Date.now().toString() });
+    const res = await fetch(`${GOOGLE_SHEETS_URL}?${urlParams.toString()}`, { 
+        method: "GET"
+    });
+    if (!res.ok) {
+        if (res.status === 429 && retryCount < 5) {
+            await new Promise(r => setTimeout(r, 1000 * (retryCount + 1)));
+            return fetchAllGoogleSheetRows(retryCount + 1);
+        }
+        throw new Error(`Failed to fetch Google Sheet: ${res.status} ${res.statusText}`);
+    }
+    const data: any[][] = await res.json();
+    return data;
+  } catch (error) {
+    if (retryCount < 5) {
+        await new Promise(r => setTimeout(r, 1000 * (retryCount + 1)));
+        return fetchAllGoogleSheetRows(retryCount + 1);
+    }
+    throw error;
+  }
 };
 
 // Append a row to the Google Sheet with automatic retries for maximum reliability
@@ -23,7 +40,8 @@ const appendToGoogleSheet = async (payload: any, retryCount = 0): Promise<any> =
       method: "POST",
       body: JSON.stringify(payload),
       headers: { "Content-Type": "text/plain;charset=utf-8" },
-      mode: "no-cors"
+      mode: "no-cors",
+      keepalive: true
     });
     return {};
   } catch (error) {
@@ -49,6 +67,7 @@ interface TextItem {
   timestamp: number;
   starred?: boolean;
   synced?: boolean;
+  deleted?: boolean;
 }
 
 const resizeImageToWebP = (file: File): Promise<string> => {
@@ -97,6 +116,7 @@ const checkForgotPasswordSetup = async (id: string) => {
   const data = await fetchAllGoogleSheetRows();
   let userPass = null;
   const images: any[] = [];
+  let isEnabledExplicitly = true;
   
   for (const row of data) {
      const rowId = String(row[0]);
@@ -105,7 +125,13 @@ const checkForgotPasswordSetup = async (id: string) => {
      if (rowId === `${id}_SECIMG` && rowType === "USER_AUTH_SECURITY") {
         try {
             const parsed = JSON.parse(String(row[2]));
+            if (typeof parsed.enabled === 'boolean') {
+                isEnabledExplicitly = parsed.enabled;
+            } else {
+                isEnabledExplicitly = true;
+            }
             if (parsed.images) {
+                images.length = 0;
                 for (let i=0; i<parsed.images.length; i++) images[i] = parsed.images[i];
             }
         } catch(e) {}
@@ -114,16 +140,16 @@ const checkForgotPasswordSetup = async (id: string) => {
      }
   }
   
-  const isEnabled = images.filter(img => img != null).length === 5;
-  if (isEnabled) {
-     return { enabled: true, images, userPass };
+  const hasFiveImages = images.filter(img => img != null).length === 5;
+  if (hasFiveImages) {
+     return { enabled: isEnabledExplicitly, images, userPass };
   }
   return null;
 };
 
 const initLocalDB = (): Promise<IDBDatabase> => {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open('my-app-db', 2);
+    const request = indexedDB.open('my-app-db', 3);
     request.onerror = () => reject(request.error);
     request.onsuccess = () => resolve(request.result);
     request.onupgradeneeded = (e) => {
@@ -135,12 +161,17 @@ const initLocalDB = (): Promise<IDBDatabase> => {
       if (!database.objectStoreNames.contains('users')) {
         database.createObjectStore('users', { keyPath: 'id' });
       }
+      if (!database.objectStoreNames.contains('notifications')) {
+        const notifStore = database.createObjectStore('notifications', { keyPath: 'attemptId' });
+        notifStore.createIndex('userId', 'userId', { unique: false });
+      }
     };
   });
 };
 
 const TAB_ID = Math.random().toString(36).substring(2);
 let lastLocalWriteTime = 0;
+const pendingDeletedIds = new Set<string>();
 
 const notifyTabSync = (userId: string) => {
   try {
@@ -153,8 +184,8 @@ const notifyTabSync = (userId: string) => {
 const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
   lastLocalWriteTime = Date.now();
   
-  // Initial save to local DB with synced = false
-  const itemToSave = { ...textItem, synced: textItem.synced || false };
+  // Save to local DB with synced = false so background loop can retry if needed
+  const itemToSave = { ...textItem, synced: false };
   
   try {
     const localDb = await initLocalDB();
@@ -213,7 +244,10 @@ const getTextsFromLocalDB = async (userId: string): Promise<TextItem[]> => {
       const store = tx.objectStore('texts');
       const index = store.index('userId');
       const req = index.getAll(userId);
-      req.onsuccess = () => resolve(req.result.sort((a, b) => b.timestamp - a.timestamp));
+      req.onsuccess = () => {
+         const items = req.result.filter((i: any) => !i.deleted);
+         resolve(items.sort((a, b) => b.timestamp - a.timestamp));
+      };
       req.onerror = () => reject(req.error);
     });
   } catch (e) {
@@ -222,7 +256,7 @@ const getTextsFromLocalDB = async (userId: string): Promise<TextItem[]> => {
   return texts;
 };
 
-const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string): Promise<{ passwordMismatch?: boolean } | void> => {
+const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string, skipTexts: boolean = false): Promise<{ passwordMismatch?: boolean, attempts?: any[], chats?: any[] } | void> => {
   try {
     const data = await fetchAllGoogleSheetRows();
     const textsMap = new Map<string, TextItem>();
@@ -231,6 +265,10 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string): 
     
     let remotePasswordStr: string | null = null;
     let lockoutExpiry = 0;
+    
+    const attempts: any[] = [];
+    const responses: any[] = [];
+    const chats: any[] = [];
 
     // Process items sequentially to always keep the latest version.
     for (const row of data) {
@@ -244,12 +282,16 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string): 
       } else if (rowId === `${userId}_SECIMG` && rowUser === "USER_AUTH_SECURITY") {
          try {
             const parsed = JSON.parse(String(row[2]));
-            if (parsed.images && parsed.images.filter((img: any) => img != null).length === 5) {
+            if (parsed) {
                 localStorage.setItem(`fp_setup_${userId}`, String(row[2]));
-            } else {
-                localStorage.removeItem(`fp_setup_${userId}`);
             }
          } catch(e) {}
+      } else if (rowUser === "USER_AUTH_ATTEMPT" && rowId.startsWith(`ATTEMPT_${userId}_`)) {
+          try { attempts.push(JSON.parse(String(row[2]))); } catch(e){}
+      } else if (rowUser === "USER_AUTH_RES" && rowId.startsWith(`RES_${userId}_`)) {
+          try { responses.push(JSON.parse(String(row[2]))); } catch(e){}
+      } else if (rowUser === "USER_AUTH_CHAT" && rowId.startsWith(`CHAT_${userId}_`)) {
+          try { chats.push(JSON.parse(String(row[2]))); } catch(e){}
       } else if (rowUser === "DELETED" && String(row[2]) === `[[DELETE_ALL]]_${userId}`) {
           textsMap.clear();
           deletedIds.clear();
@@ -274,7 +316,6 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string): 
 
     if (lockoutExpiry > Date.now()) {
       localStorage.setItem(`login_lockout_${userId}`, lockoutExpiry.toString());
-      localStorage.setItem(`verify_lockout_${userId}`, lockoutExpiry.toString());
     }
 
     if (currentPassword && remotePasswordStr && remotePasswordStr !== currentPassword && parseInt(remotePasswordStr, 10) !== parseInt(currentPassword, 10)) {
@@ -282,8 +323,23 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string): 
     }
 
     
-    const remoteTexts = Array.from(textsMap.values()).sort((a, b) => b.timestamp - a.timestamp);
+    const remoteTexts = Array.from(textsMap.values())
+        .filter(t => !pendingDeletedIds.has(t.id))
+        .sort((a, b) => b.timestamp - a.timestamp);
     
+    const mergedAttempts = attempts.map(a => {
+       const res = responses.slice().reverse().find((r: any) => r.attemptId === a.attemptId);
+       return {
+         ...a,
+         action: res ? res.action : 'PENDING',
+         pass: res ? res.pass : null
+       };
+    });
+
+    if (skipTexts) {
+       return { attempts: mergedAttempts, chats };
+    }
+
     if (remoteTexts.length > 0 || deletedIds.size > 0 || deleteAllMarkerTime > 0) {
       try {
         const localDb = await initLocalDB();
@@ -329,12 +385,20 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string): 
           };
           
           remoteTexts.forEach(t => {
-              const req = store.put(t);
-              req.onsuccess = () => {
-                putCount++;
-                checkDone();
+              const getReq = store.get(t.id);
+              getReq.onsuccess = () => {
+                 const localText = getReq.result;
+                 if (localText && localText.synced === false) {
+                     // Keep local pending edit, don't overwrite
+                     putCount++;
+                     checkDone();
+                 } else {
+                     const putReq = store.put(t);
+                     putReq.onsuccess = () => { putCount++; checkDone(); };
+                     putReq.onerror = () => reject(putReq.error);
+                 }
               };
-              req.onerror = () => reject(req.error);
+              getReq.onerror = () => reject(getReq.error);
           });
           
           Array.from(deletedIds).forEach(id => {
@@ -352,6 +416,8 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string): 
         console.error("Failed to save remote texts to local DB", localErr);
       }
     }
+    
+    return { attempts: mergedAttempts, chats };
   } catch (e: any) {
     if (e.message && e.message.includes("Failed to fetch")) {
        // Silently ignore intermittent network/rate-limit fetch errors
@@ -366,12 +432,28 @@ const deleteTextsFromDB = async (ids: string[], userId?: string, isAll: boolean 
   if (ids.length === 0) return true;
   lastLocalWriteTime = Date.now();
   
+  if (isAll) {
+    pendingDeletedIds.clear();
+    // We don't mark all as pending since local DB is cleared, but just in case
+  } else {
+    ids.forEach(id => pendingDeletedIds.add(id));
+  }
+  
   try {
     const localDb = await initLocalDB();
     await new Promise((resolve, reject) => {
       const tx = localDb.transaction('texts', 'readwrite');
       const store = tx.objectStore('texts');
-      ids.forEach(id => store.delete(id));
+      ids.forEach(id => {
+         const getReq = store.get(id);
+         getReq.onsuccess = () => {
+             if (getReq.result) {
+                 store.put({ ...getReq.result, deleted: true, synced: false });
+             } else {
+                 store.put({ id, userId: userId || "", text: "", timestamp: Date.now(), deleted: true, synced: false });
+             }
+         };
+      });
       tx.oncomplete = resolve;
       tx.onerror = reject;
     });
@@ -488,10 +570,8 @@ const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; e
       } else if (rowId === `${id}_SECIMG` && rowUser === "USER_AUTH_SECURITY") {
          try {
             const parsed = JSON.parse(String(row[2]));
-            if (parsed.images && parsed.images.filter((img: any) => img != null).length === 5) {
+            if (parsed) {
                 localStorage.setItem(`fp_setup_${id}`, String(row[2]));
-            } else {
-                localStorage.removeItem(`fp_setup_${id}`);
             }
          } catch(e) {}
       }
@@ -515,7 +595,6 @@ const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; e
 
     if (lockoutExpiry > Date.now()) {
       localStorage.setItem(`login_lockout_${id}`, lockoutExpiry.toString());
-      localStorage.setItem(`verify_lockout_${id}`, lockoutExpiry.toString());
       return { isValid: false, error: 'تم الحظر مؤقتا يرجى الانتظار' };
     }
 
@@ -535,7 +614,9 @@ const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; e
         } catch (err) {}
         
         // Save extracted texts locally
-        const remoteTexts = Array.from(textsMap.values()).sort((a, b) => b.timestamp - a.timestamp);
+        const remoteTexts = Array.from(textsMap.values())
+            .filter(t => !pendingDeletedIds.has(t.id))
+            .sort((a, b) => b.timestamp - a.timestamp);
         if (remoteTexts.length > 0) {
           try {
             const localDb = await initLocalDB();
@@ -544,12 +625,22 @@ const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; e
               const store = tx.objectStore('texts');
               let putCount = 0;
               remoteTexts.forEach(item => {
-                const req = store.put(item);
-                req.onsuccess = () => {
-                  putCount++;
-                  if (putCount === remoteTexts.length) resolve();
+                const getReq = store.get(item.id);
+                getReq.onsuccess = () => {
+                   const localText = getReq.result;
+                   if (localText && localText.synced === false) {
+                       putCount++;
+                       if (putCount === remoteTexts.length) resolve();
+                   } else {
+                       const putReq = store.put(item);
+                       putReq.onsuccess = () => {
+                         putCount++;
+                         if (putCount === remoteTexts.length) resolve();
+                       };
+                       putReq.onerror = reject;
+                   }
                 };
-                req.onerror = reject;
+                getReq.onerror = reject;
               });
             });
           } catch (e) {
@@ -564,11 +655,12 @@ const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; e
     } else if (validPassword) {
       return { isValid: true };
     }
-  } catch (e) {
+  } catch (e: any) {
     console.error("Google Sheets login error", e);
     if (validPassword) {
       return { isValid: true };
     }
+    return { isValid: false, error: 'تعذر الاتصال بالخادم، يرجى المحاولة مرة أخرى' };
   }
   
   if (!userExists) {
@@ -667,7 +759,22 @@ export default function App() {
 
   const handleLogout = () => {
     const idToRemove = currentUserId;
+    
+    // Log out all accepted devices to synchronize logout
+    const acceptedDevices = securityAttempts.filter(a => a.action === 'ACCEPT');
+    acceptedDevices.forEach(device => {
+        appendToGoogleSheet({
+           action: "ADD",
+           id: `RES_${idToRemove}_${device.attemptId}`,
+           userid: "USER_AUTH_RES",
+           text: JSON.stringify({ action: 'FORCE_LOGOUT', attemptId: device.attemptId }),
+           timestamp: Date.now(),
+           starred: 0
+        });
+    });
+
     localStorage.removeItem('userSession');
+    localStorage.removeItem(`current_attemptid_${idToRemove}`);
     localStorage.setItem('explicitLogout', 'true');
     setCurrentUserId('');
     setCurrentPassword('');
@@ -688,7 +795,8 @@ export default function App() {
   const [showUserIdPopup, setShowUserIdPopup] = useState(false);
   const [showUserIdPassword, setShowUserIdPassword] = useState(false);
   const [showVerifyPassword, setShowVerifyPassword] = useState(false);
-  const [verifyAction, setVerifyAction] = useState<'view' | 'edit' | 'setup_forgot_pwd'>('view');
+  const [showDeviceVerifyPopup, setShowDeviceVerifyPopup] = useState(false);
+  const [verifyAction, setVerifyAction] = useState<'view' | 'edit' | 'setup_forgot_pwd' | 'toggle_forgot_pwd' | 'reject_device' | 'accept_device' | 'chat_device' | 'logout_device' | 'ban_device'>('view');
   
   const [showForgotPasswordSetup, setShowForgotPasswordSetup] = useState(false);
   const [isForgotPasswordEnabled, setIsForgotPasswordEnabled] = useState(false);
@@ -727,12 +835,11 @@ export default function App() {
       }
       
       checkForgotPasswordSetup(loginId).then(setup => {
-         if (setup && setup.enabled && setup.images && setup.images.length === 5) {
-             setLoginHasFpEnabled(true);
-             localStorage.setItem(`fp_setup_${loginId}`, JSON.stringify({ enabled: true, images: setup.images }));
+         if (setup) {
+             setLoginHasFpEnabled(setup.enabled && setup.images && setup.images.length === 5);
+             localStorage.setItem(`fp_setup_${loginId}`, JSON.stringify({ enabled: setup.enabled, images: setup.images || [] }));
          } else {
              setLoginHasFpEnabled(false);
-             localStorage.setItem(`fp_setup_${loginId}`, JSON.stringify({ enabled: false, images: [] }));
          }
       }).catch(() => {});
     } else {
@@ -740,20 +847,82 @@ export default function App() {
     }
   }, [loginId]);
 
+  const [lockoutChatVisible, setLockoutChatVisible] = useState(false);
+  const [lockoutChatMessages, setLockoutChatMessages] = useState<any[]>([]);
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  const [searchQuery, setSearchQuery] = useState('');
+
   const [texts, setTexts] = useState<TextItem[]>([]);
   const sortedTexts = useMemo(() => {
-    return texts.slice().sort((a, b) => {
+    let filtered = texts.slice();
+    if (searchQuery.trim()) {
+       const lowerQ = searchQuery.toLowerCase();
+       filtered = filtered.filter(t => t.text.toLowerCase().includes(lowerQ));
+    }
+    return filtered.sort((a, b) => {
       if (a.starred && !b.starred) return -1;
       if (!a.starred && b.starred) return 1;
       return b.timestamp - a.timestamp;
     });
-  }, [texts]);
+  }, [texts, searchQuery]);
+  
+  const [securityAttempts, setSecurityAttempts] = useState<any[]>([]);
+  const [chatsData, setChatsData] = useState<any[]>([]);
+  const [activeChatAttempt, setActiveChatAttempt] = useState<any | null>(null);
+  const [showOwnerChatPopup, setShowOwnerChatPopup] = useState(false);
+  const [chatInputValue, setChatInputValue] = useState('');
+  
+  const [hiddenNotifications, setHiddenNotifications] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (currentUserId) {
+        initLocalDB().then(db => {
+           const tx = db.transaction('notifications', 'readonly');
+           const store = tx.objectStore('notifications');
+           const index = store.index('userId');
+           const req = index.getAll(currentUserId);
+           req.onsuccess = () => {
+             if (req.result && req.result.length > 0) {
+                setSecurityAttempts(prev => {
+                   // only set if empty to avoid overwriting fresher network data
+                   if (prev.length === 0) return req.result;
+                   return prev;
+                });
+             }
+           };
+        }).catch(()=>{});
+        
+        const stored = localStorage.getItem(`hidden_notifications_${currentUserId}`);
+        if (stored) {
+            try { setHiddenNotifications(new Set(JSON.parse(stored))); } catch(e) {}
+        } else {
+            setHiddenNotifications(new Set());
+        }
+    } else {
+        setHiddenNotifications(new Set());
+    }
+  }, [currentUserId]);
+
+  useEffect(() => {
+    if (currentUserId) {
+       localStorage.setItem(`hidden_notifications_${currentUserId}`, JSON.stringify(Array.from(hiddenNotifications)));
+    }
+  }, [hiddenNotifications, currentUserId]);
+
+  const activeSecurityAttempts = useMemo(() => {
+     return securityAttempts.filter(a => (a.action === 'PENDING' || a.action === 'CHAT') && !hiddenNotifications.has(a.attemptId));
+  }, [securityAttempts, hiddenNotifications]);
+
+  const notificationsList = useMemo(() => {
+     return securityAttempts.filter(a => !hiddenNotifications.has(a.attemptId)).slice().reverse();
+  }, [securityAttempts, hiddenNotifications]);
+
   const pendingCount = useMemo(() => texts.filter(t => t.synced === false).length, [texts]);
   const recentTextAdditionsCount = useMemo(() => {
-    return texts.filter(t => !t.text.startsWith('data:image/') && Date.now() - t.timestamp < 24 * 60 * 60 * 1000).length;
+    return texts.filter(t => !t.text.startsWith('data:image/')).length;
   }, [texts]);
   const recentImageAdditionsCount = useMemo(() => {
-    return texts.filter(t => t.text.startsWith('data:image/') && Date.now() - t.timestamp < 24 * 60 * 60 * 1000).length;
+    return texts.filter(t => t.text.startsWith('data:image/')).length;
   }, [texts]);
 
   const [verifyPasswordInput, setVerifyPasswordInput] = useState('');
@@ -762,7 +931,75 @@ export default function App() {
   const [newPasswordValue, setNewPasswordValue] = useState('');
   const [showAddTextPopup, setShowAddTextPopup] = useState(false);
   const [showAddImagePopup, setShowAddImagePopup] = useState(false);
+  const [showNotificationsPopup, setShowNotificationsPopup] = useState(false);
+  const [prevSecurityAttemptsCount, setPrevSecurityAttemptsCount] = useState(0);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
+  const [readNotifications, setReadNotifications] = useState<Set<string>>(new Set());
+  const notifScrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (currentUserId) {
+      const stored = localStorage.getItem(`read_notifications_${currentUserId}`);
+      if (stored) {
+         try { setReadNotifications(new Set(JSON.parse(stored))); } catch(e) {}
+      } else {
+         setReadNotifications(new Set());
+      }
+    }
+  }, [currentUserId]);
+
+  const markNotifAsRead = useCallback((attemptId: string) => {
+     setReadNotifications(prev => {
+        if (prev.has(attemptId)) return prev;
+        const next = new Set(prev);
+        next.add(attemptId);
+        if (currentUserId) localStorage.setItem(`read_notifications_${currentUserId}`, JSON.stringify(Array.from(next)));
+        return next;
+     });
+  }, [currentUserId]);
+
+  const unreadNotifsCount = useMemo(() => {
+      return activeSecurityAttempts.filter(a => !readNotifications.has(a.attemptId)).length;
+  }, [activeSecurityAttempts, readNotifications]);
+  const hasUnreadNotifs = unreadNotifsCount > 0;
+
+  useEffect(() => {
+     if (!showNotificationsPopup) return;
+     const container = notifScrollRef.current;
+     if (!container) return;
+
+     const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+           if (entry.isIntersecting) {
+               const id = entry.target.getAttribute('data-attempt-id');
+               if (id) markNotifAsRead(id);
+           }
+        });
+     }, {
+         root: container,
+         rootMargin: "-30% 0px -30% 0px",
+         threshold: 0
+     });
+
+     const elements = container.querySelectorAll('.notification-item');
+     elements.forEach(el => observer.observe(el));
+
+     return () => observer.disconnect();
+  }, [showNotificationsPopup, notificationsList, markNotifAsRead]);
+
+
+  const [isBellShaking, setIsBellShaking] = useState(false);
+
+  useEffect(() => {
+     if (activeSecurityAttempts.length > prevSecurityAttemptsCount) {
+        const hasRecent = activeSecurityAttempts.some(a => Date.now() - a.time < 15000);
+        if (hasRecent) {
+           setIsBellShaking(true);
+           setTimeout(() => setIsBellShaking(false), 2000);
+        }
+     }
+     setPrevSecurityAttemptsCount(activeSecurityAttempts.length);
+  }, [activeSecurityAttempts, prevSecurityAttemptsCount]);
   const [imageCooldownRemaining, setImageCooldownRemaining] = useState(0);
 
   useEffect(() => {
@@ -808,6 +1045,64 @@ export default function App() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const [loginLockoutTimer, setLoginLockoutTimer] = useState(0);
+
+  useEffect(() => {
+    let int: any;
+    if (currentView === 'login' && loginLockoutTimer > 0 && loginId) {
+       const attemptId = localStorage.getItem(`lockout_attemptid_${loginId}`);
+       if (attemptId) {
+          int = setInterval(async () => {
+             try {
+                 const data = await fetchAllGoogleSheetRows();
+                 const responses = [];
+                 const chats = [];
+                 for(const row of data) {
+                    if (String(row[1]) === "USER_AUTH_RES" && String(row[0]).startsWith(`RES_${loginId}_`)) {
+                       try { responses.push(JSON.parse(String(row[2]))); } catch(e){}
+                    } else if (String(row[1]) === "USER_AUTH_CHAT" && String(row[0]).startsWith(`CHAT_${loginId}_`)) {
+                       try { chats.push(JSON.parse(String(row[2]))); } catch(e){}
+                    }
+                 }
+                 const myRes = responses.slice().reverse().find((r: any) => r.attemptId === attemptId);
+                 if (myRes) {
+                     if (myRes.action === "REJECT") {
+                         localStorage.setItem(`login_lockout_${loginId}`, "9999999999999");
+                         setLoginLockoutTimer(999999);
+                         setLockoutChatVisible(false);
+                     } else if (myRes.action === "ACCEPT" && myRes.pass) {
+                         localStorage.removeItem(`login_attempts_${loginId}`);
+                         localStorage.removeItem(`login_lockout_${loginId}`);
+                         localStorage.removeItem(`lockout_attemptid_${loginId}`);
+                         localStorage.setItem(`current_attemptid_${loginId}`, attemptId);
+                         setCurrentUserId(loginId);
+                         setCurrentPassword(myRes.pass);
+                         saveSession(loginId, myRes.pass);
+                         setCurrentView('dashboard');
+                         setLockoutChatVisible(false);
+                     } else if (myRes.action === "CHAT") {
+                         setLockoutChatVisible(true);
+                     } else if (myRes.action === "CLOSE_CHAT") {
+                         setLockoutChatVisible(false);
+                     } else if (myRes.action === "BAN") {
+                         localStorage.setItem(`device_banned_${loginId}`, 'true');
+                         setLoginLockoutTimer(0);
+                         setLockoutChatVisible(false);
+                         localStorage.removeItem(`lockout_attemptid_${loginId}`);
+                     }
+                 }
+                 const myChats = chats.filter((c: any) => c.attemptId === attemptId).sort((a: any,b: any) => a.time - b.time);
+                 setLockoutChatMessages(prev => {
+                    const fetchedIds = new Set(myChats.map((c: any) => c.time + '-' + c.message));
+                    const optimistic = prev.filter((c: any) => Date.now() - c.time < 15000 && !fetchedIds.has(c.time + '-' + c.message));
+                    return [...myChats, ...optimistic].sort((a: any,b: any) => a.time - b.time);
+                 });
+             } catch(e) {}
+          }, 5000);
+       }
+    }
+    return () => clearInterval(int);
+  }, [currentView, loginLockoutTimer > 0, loginId]);
+
   useEffect(() => {
     const checkTimer = () => {
       if (loginId) {
@@ -1234,12 +1529,43 @@ export default function App() {
       let isSyncing = false;
       const fetchAndSync = async () => {
         if (isSyncing) return;
+        const skipTexts = Date.now() - lastLocalWriteTime < 5000;
         isSyncing = true;
         try {
-          const res = await syncTextsFromRemoteDB(currentUserId, currentPassword);
+          const res = await syncTextsFromRemoteDB(currentUserId, currentPassword, skipTexts);
           if (res && res.passwordMismatch) {
             handleLogout();
             return;
+          }
+          if (res && res.attempts) {
+            setSecurityAttempts(res.attempts);
+            try {
+              const localDb = await initLocalDB();
+              const tx = localDb.transaction('notifications', 'readwrite');
+              const store = tx.objectStore('notifications');
+              res.attempts.forEach((a: any) => {
+                 store.put({ ...a, userId: currentUserId });
+              });
+            } catch (e) {}
+
+            const myAttemptId = localStorage.getItem(`current_attemptid_${currentUserId}`);
+            if (myAttemptId) {
+               const myAttempt = res.attempts.find((a: any) => a.attemptId === myAttemptId);
+               if (myAttempt && (myAttempt.action === 'FORCE_LOGOUT' || myAttempt.action === 'BAN')) {
+                  if (myAttempt.action === 'BAN') {
+                     localStorage.setItem(`device_banned_${currentUserId}`, 'true');
+                  }
+                  handleLogout();
+                  return;
+               }
+            }
+          }
+          if (res && res.chats) {
+             setChatsData(prev => {
+                const fetchedIds = new Set(res.chats.map((c: any) => c.time + '-' + c.message));
+                const optimistic = prev.filter((c: any) => Date.now() - c.time < 15000 && !fetchedIds.has(c.time + '-' + c.message));
+                return [...res.chats, ...optimistic].sort((a: any, b: any) => a.time - b.time);
+             });
           }
           await fetchFromLocal();
         } catch (e) {
@@ -1359,53 +1685,82 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen w-full bg-black relative flex flex-col items-center justify-center gap-4 text-white" dir="rtl">
-      <div className="absolute top-0 left-0 p-4 text-lg text-gray-500 font-sans flex flex-col" dir="ltr">
-        <span>Inter Storage</span>
-      </div>
+    <div className={`min-h-screen w-full bg-black relative flex flex-col items-center justify-center gap-4 text-white ${theme === 'light' ? 'light-mode' : ''}`} dir="rtl">
+      <header className="absolute top-0 left-0 right-0 h-[72px] flex items-center justify-between px-4 sm:px-6 w-full z-40 pointer-events-none" dir="ltr">
+        <div className="flex items-center justify-start text-lg text-gray-500 font-sans pointer-events-none w-auto sm:w-[200px] flex-shrink-0">
+          <span>Inter Storage</span>
+        </div>
 
-      {currentView === 'dashboard' && (
-        <button 
-          onClick={() => {
-             setShowUserIdPopup(true);
-             const cachedSetup = localStorage.getItem(`fp_setup_${currentUserId}`);
-             if (cachedSetup) {
-                try {
-                   const parsed = JSON.parse(cachedSetup);
-                   if (parsed.images && parsed.images.length === 5) {
-                      setIsForgotPasswordEnabled(true);
-                      setFpSetupImages(parsed.images.map((img: any) => ({ dataUrl: img.originalDataUrl || img.dataUrl, keyword: img.keyword })));
-                   }
-                } catch(e) {}
-             } else {
-                setIsForgotPasswordEnabled(false);
-                setFpSetupImages([]);
-             }
-             
-             checkForgotPasswordSetup(currentUserId).then(setup => {
-                 if (setup && setup.enabled) {
-                    setIsForgotPasswordEnabled(true);
-                    setFpSetupImages(setup.images.map((img: any) => ({ dataUrl: img.originalDataUrl, keyword: img.keyword })));
-                    localStorage.setItem(`fp_setup_${currentUserId}`, JSON.stringify({ images: setup.images }));
+        {currentView === 'dashboard' && (
+          <div className="flex-1 flex justify-center pointer-events-auto px-4 w-full sm:max-w-[600px]">
+             <input 
+               type="text" 
+               placeholder="البحث هنا..." 
+               value={searchQuery}
+               onChange={e => setSearchQuery(e.target.value)}
+               className="bg-[#111] sm:bg-white/5 border border-white/15 rounded-2xl px-4 py-2 sm:py-2.5 text-white outline-none focus:border-white/30 transition-all w-full text-sm sm:text-base text-center placeholder-gray-500 focus:bg-[#222] sm:focus:bg-white/10 shadow-sm"
+               dir="rtl"
+             />
+          </div>
+        )}
+
+        <div className="flex items-center justify-end pointer-events-auto w-auto sm:w-[200px] flex-shrink-0" dir="ltr">
+          {currentView === 'dashboard' && (
+            <button 
+              onClick={() => {
+                 setShowUserIdPopup(true);
+                 const cachedSetup = localStorage.getItem(`fp_setup_${currentUserId}`);
+                 if (cachedSetup) {
+                    try {
+                       const parsed = JSON.parse(cachedSetup);
+                       if (parsed.images && parsed.images.length === 5) {
+                          setIsForgotPasswordEnabled(parsed.enabled !== false);
+                          setFpSetupImages(parsed.images.map((img: any) => ({ dataUrl: img.originalDataUrl || img.dataUrl, keyword: img.keyword })));
+                       }
+                    } catch(e) {}
                  } else {
                     setIsForgotPasswordEnabled(false);
                     setFpSetupImages([]);
-                    localStorage.removeItem(`fp_setup_${currentUserId}`);
                  }
-             });
-          }}
-          className="absolute top-4 right-4 p-2 flex items-center justify-center transition-all outline-none cursor-pointer text-gray-400 hover:text-white hover:scale-110 active:scale-95"
-          title="الحساب"
-        >
-          <User size={28} strokeWidth={1.5} />
-        </button>
-      )}
+                 
+                 checkForgotPasswordSetup(currentUserId).then(setup => {
+                     if (setup) {
+                        setIsForgotPasswordEnabled(setup.enabled);
+                        setFpSetupImages(setup.images.map((img: any) => ({ dataUrl: img.originalDataUrl || img.dataUrl, keyword: img.keyword })));
+                        localStorage.setItem(`fp_setup_${currentUserId}`, JSON.stringify({ enabled: setup.enabled, images: setup.images }));
+                     } else {
+                        setIsForgotPasswordEnabled(false);
+                        setFpSetupImages([]);
+                        localStorage.removeItem(`fp_setup_${currentUserId}`);
+                     }
+                 });
+              }}
+              className="p-2 -mr-2 flex items-center justify-center transition-colors outline-none cursor-pointer text-gray-400 hover:text-white active:scale-95 bg-transparent border-none"
+              title="الحساب"
+            >
+              <User size={28} strokeWidth={1.5} />
+            </button>
+          )}
+        </div>
+      </header>
 
-      {currentView === 'dashboard' && texts.length > 0 && (
-        <>
-          <div className="absolute top-[73px] left-0 right-0 h-[63px] flex items-center justify-end px-6 gap-4 z-20 pointer-events-none">
+      {/* Header separator */}
+      <div className="absolute top-[72px] left-0 right-0 h-[1px] bg-white/10 w-full z-10 pointer-events-none" />
+
+      {currentView === 'dashboard' && (
+        <div className="absolute top-[72px] left-0 right-0 h-[56px] flex items-center justify-end px-3 sm:px-6 z-20 pointer-events-none w-full border-b border-white/10" dir="rtl">
+          <div className="flex items-center justify-end gap-2 sm:gap-4 flex-shrink-0">
             {selectedTexts.size > 0 && (
-              <>
+              <div className="flex items-center pointer-events-none">
+                <button
+                  onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+                  className="px-2 sm:px-[12px] h-[38px] sm:h-[42px] flex items-center justify-center transition-colors outline-none cursor-pointer text-gray-400 hover:text-white active:scale-95 pointer-events-auto bg-transparent border border-transparent mr-1"
+                  title={theme === 'dark' ? "وضع الفاتح" : "وضع الداكن"}
+                >
+                  {theme === 'dark' ? <Sun size={20} strokeWidth={1.5} className="sm:w-6 sm:h-6" /> : <Moon size={20} strokeWidth={1.5} className="sm:w-6 sm:h-6" />}
+                </button>
+                <div className="w-[1px] h-6 sm:h-8 bg-white/10 mx-1 sm:mx-2 pointer-events-none"></div>
+
                 <button
                   onClick={() => {
                     if (selectedTexts.size === texts.length) {
@@ -1414,32 +1769,45 @@ export default function App() {
                       setSelectedTexts(new Set(texts.map(t => t.id)));
                     }
                   }}
-                  className="px-4 h-[42px] flex items-center justify-center transition-all outline-none cursor-pointer text-gray-400 hover:text-white rounded-lg border border-gray-600 hover:border-gray-400 active:scale-95 pointer-events-auto bg-transparent"
+                  className="px-2 sm:px-4 h-[38px] sm:h-[42px] flex items-center justify-center transition-colors outline-none cursor-pointer text-gray-400 hover:text-white active:scale-95 pointer-events-auto bg-transparent border border-gray-600 hover:border-gray-400 ml-1 sm:ml-2"
                 >
-                  <span className="font-medium text-base m-0 p-0 leading-none flex items-center justify-center h-full h-fit">All</span>
+                  <span className="font-medium text-xs sm:text-base m-0 p-0 leading-none flex items-center justify-center h-full h-fit">All</span>
                 </button>
                 <button
                   onClick={() => setShowDeleteConfirm(true)}
-                  className="px-4 h-[42px] flex items-center justify-center gap-2 transition-all outline-none cursor-pointer text-red-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg active:scale-95 pointer-events-auto bg-transparent border border-transparent"
+                  className="px-2 sm:px-[12px] h-[38px] sm:h-[42px] flex items-center justify-center gap-1 sm:gap-2 transition-colors outline-none cursor-pointer text-red-500 hover:text-red-400 active:scale-95 pointer-events-auto bg-transparent border border-transparent mr-1"
                 >
-                  <span className="font-semibold m-0 p-0 leading-none flex items-center justify-center h-full h-fit text-lg">{selectedTexts.size}</span>
-                  <Trash2 size={24} strokeWidth={1.5} className="flex-shrink-0" />
+                  <span className="font-semibold m-0 p-0 leading-none flex items-center justify-center h-full h-fit text-sm sm:text-lg">{selectedTexts.size}</span>
+                  <Trash2 size={18} strokeWidth={1.5} className="sm:w-6 sm:h-6" />
                 </button>
-              </>
+                <div className="w-[1px] h-6 sm:h-8 bg-white/10 mx-1 sm:mx-2 pointer-events-none"></div>
+              </div>
             )}
-            <div className="flex items-center gap-1 pointer-events-auto">
-              <span className="text-white/30 text-base font-medium px-1" title="عدد النصوص المضافة اليوم">
-                {recentTextAdditionsCount > 0 ? recentTextAdditionsCount : ''}
+            <div className="flex items-center gap-0.5 sm:gap-1 pointer-events-auto">
+              {selectedTexts.size === 0 && (
+                <>
+                  <button
+                    onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+                    className="p-1 flex items-center justify-center transition-colors outline-none cursor-pointer text-gray-400 hover:text-white active:scale-95 bg-transparent border-none"
+                    title={theme === 'dark' ? "وضع الفاتح" : "وضع الداكن"}
+                  >
+                    {theme === 'dark' ? <Sun size={22} className="sm:w-7 sm:h-7" strokeWidth={1.5} /> : <Moon size={22} className="sm:w-7 sm:h-7" strokeWidth={1.5} />}
+                  </button>
+                  <div className="w-[1px] h-5 sm:h-6 bg-white/10 mx-0.5 sm:mx-1"></div>
+                </>
+              )}
+              <span className="text-white/30 text-xs sm:text-base font-medium px-0.5 sm:px-1" title="إجمالي النصوص">
+                {recentTextAdditionsCount}
               </span>
               <button 
                 onClick={() => { setShowAddTextPopup(true); setNewText(''); }}
-                className="p-2 flex items-center justify-center transition-all outline-none cursor-pointer text-gray-400 hover:text-white hover:scale-110 active:scale-95"
+                className="p-1 flex items-center justify-center transition-colors outline-none cursor-pointer text-gray-400 hover:text-white active:scale-95 bg-transparent border-none"
                 title="إضافة نص"
               >
-                <Plus size={28} strokeWidth={1.5} />
+                <Plus size={22} className="sm:w-7 sm:h-7" strokeWidth={1.5} />
               </button>
-              <span className="text-white/30 text-base font-medium pl-1 pr-3" title="عدد الصور المضافة اليوم">
-                {recentImageAdditionsCount > 0 ? recentImageAdditionsCount : ''}
+              <span className="text-white/30 text-xs sm:text-base font-medium px-0.5 sm:px-1" title="إجمالي الصور">
+                {recentImageAdditionsCount}
               </span>
               <button 
                 onClick={() => {
@@ -1448,23 +1816,30 @@ export default function App() {
                   setImagePreviews([]); 
                 }}
                 disabled={imageCooldownRemaining > 0}
-                className={`p-2 flex items-center justify-center transition-all outline-none ${imageCooldownRemaining > 0 ? 'text-gray-600 cursor-not-allowed' : 'text-gray-400 hover:text-white hover:scale-110 active:scale-95 cursor-pointer'}`}
+                className={`p-1 flex items-center justify-center transition-colors outline-none bg-transparent border-none ${imageCooldownRemaining > 0 ? 'text-gray-600 cursor-not-allowed' : 'text-gray-400 hover:text-white active:scale-95 cursor-pointer'}`}
                 title={imageCooldownRemaining > 0 ? `انتظر ${imageCooldownRemaining} ثواني` : "إضافة صورة"}
               >
                 {imageCooldownRemaining > 0 ? (
-                  <span className="text-sm font-medium w-[26px] h-[26px] flex items-center justify-center bg-white/10 rounded-full">{imageCooldownRemaining}</span>
+                  <span className="text-xs sm:text-sm font-medium w-5 h-5 sm:w-[26px] sm:h-[26px] flex items-center justify-center bg-white/10 rounded-full">{imageCooldownRemaining}</span>
                 ) : (
-                  <ImageIcon size={26} strokeWidth={1.5} />
+                  <ImageIcon size={22} className="sm:w-[26px] sm:h-[26px]" strokeWidth={1.5} />
+                )}
+              </button>
+              <div className="w-[1px] h-5 sm:h-6 bg-white/10 mx-0.5 sm:mx-1"></div>
+              <button 
+                onClick={() => setShowNotificationsPopup(true)}
+                className={`p-1 flex items-center justify-center transition-colors outline-none cursor-pointer relative bg-transparent border-none ${isBellShaking ? 'animate-shake' : ''} ${hasUnreadNotifs ? 'text-green-500 active:scale-95' : 'text-gray-400 hover:text-white active:scale-95'}`}
+                title="الإشعارات"
+              >
+                <Bell size={22} className="sm:w-7 sm:h-7" strokeWidth={1.5} />
+                {activeSecurityAttempts.length > 0 && (
+                   <span className={`absolute top-0 left-0 text-[8px] sm:text-[10px] font-bold flex items-center justify-center ${hasUnreadNotifs ? 'bg-green-500 text-black rounded-full w-3.5 h-3.5 sm:w-4 sm:h-4' : 'bg-transparent text-gray-400 w-3.5 h-3.5 sm:w-4 sm:h-4'}`}>{hasUnreadNotifs ? unreadNotifsCount : activeSecurityAttempts.length}</span>
                 )}
               </button>
             </div>
           </div>
-          <div className="absolute top-[136px] left-0 right-0 h-[1px] bg-white/10 w-full z-10 pointer-events-none" />
-        </>
+        </div>
       )}
-
-      {/* Header separator */}
-      <div className="absolute top-[72px] left-0 right-0 h-[1px] bg-white/10 w-full z-10 pointer-events-none" />
 
       {currentView === 'home' && (
         <>
@@ -1714,91 +2089,122 @@ export default function App() {
           </div>
 
           <div className="flex flex-col w-full gap-3 mt-4">
-            <button 
-              onClick={() => {
-                if (isLoggingIn || loginLockoutTimer > 0) return;
-                setIsLoggingIn(true);
-                setLoginIdError('');
-                setLoginPasswordError('');
-                
-                (async () => {
-                  // Run login check
-                  let result = await loginUser(loginId, loginPassword);
+            {localStorage.getItem(`device_banned_${loginId}`) === 'true' ? (
+              <div className="w-full text-center text-red-500 font-medium text-lg py-4 bg-red-500/10 rounded-xl border border-red-500/20" dir="rtl">
+                تم منع هذا الجهاز نهائيا
+              </div>
+            ) : loginLockoutTimer > 300 ? (
+              <div className="w-full text-center text-red-500 font-medium text-lg py-4 bg-red-500/10 rounded-xl border border-red-500/20" dir="rtl">
+                تم رفض الدخول من قبل صاحب الحساب
+              </div>
+            ) : (
+              <button 
+                onClick={() => {
+                  if (isLoggingIn || loginLockoutTimer > 0) return;
+                  if (localStorage.getItem(`device_banned_${loginId}`) === 'true') return;
+                  setIsLoggingIn(true);
+                  setLoginIdError('');
+                  setLoginPasswordError('');
                   
-                  // If login is valid, and we haven't synced texts during a remote login fallback, sync texts now!
-                  if (result.isValid && !result.syncedTexts) {
-                     const syncRes = await syncTextsFromRemoteDB(loginId, loginPassword);
-                     if (syncRes && syncRes.passwordMismatch) {
-                       result = { isValid: false, error: 'كلمة المرور خطا' };
-                       // Wipe the stale local db entry
-                       initLocalDB().then(db => {
-                          const tx = db.transaction('users', 'readwrite');
-                          tx.objectStore('users').delete(loginId);
-                       }).catch(() => {});
-                     }
-                  }
-                  
-                  setIsLoggingIn(false);
-                  
-                  if (result.isValid) {
-                    localStorage.removeItem(`login_attempts_${loginId}`);
-                    localStorage.removeItem(`login_lockout_${loginId}`);
-                    setCurrentUserId(loginId);
-                    setCurrentPassword(loginPassword);
-                    saveSession(loginId, loginPassword);
-                    setCurrentView('dashboard');
-                  } else {
-                    if (result.error === 'لا يوجد المعرف') {
-                      setLoginIdError('عذرا هذا المعرف غير موجود');
-                    } else if (result.error === 'كلمة المرور خطا') {
-                      const attemptsStr = localStorage.getItem(`login_attempts_${loginId}`);
-                      let attempts = attemptsStr ? parseInt(attemptsStr) : 0;
-                      attempts += 1;
-                      if (attempts >= 5) {
-                        const expiry = Date.now() + 300000;
-                        localStorage.setItem(`login_lockout_${loginId}`, expiry.toString());
-                        localStorage.setItem(`login_attempts_${loginId}`, "0");
-                        setLoginLockoutTimer(300);
-                        setLoginPasswordError('تم الحظر مؤقتا يرجى الانتظار');
-                        appendToGoogleSheet({
-                          action: "ADD",
-                          id: `${loginId}_LOCKOUT`,
-                          userid: "USER_AUTH_LOCKOUT",
-                          text: expiry.toString(),
-                          timestamp: Date.now(),
-                          starred: 0
-                        }).catch(e => console.error(e));
-                      } else {
-                        localStorage.setItem(`login_attempts_${loginId}`, attempts.toString());
-                        setLoginPasswordError(`عذرا كلمة المرور خاطئة (يتبقى ${5 - attempts} محاولات)`);
-                      }
-                    } else if (result.error === 'تم الحظر مؤقتا يرجى الانتظار') {
-                      setLoginPasswordError(result.error);
-                      const lockoutStr = localStorage.getItem(`login_lockout_${loginId}`);
-                      if (lockoutStr) {
-                        const t = parseInt(lockoutStr);
-                        const diff = Math.ceil((t - Date.now()) / 1000);
-                        if (diff > 0) setLoginLockoutTimer(diff);
-                      }
-                    } else {
-                      alert(result.error);
+                  (async () => {
+                    // Run login check
+                    let result = await loginUser(loginId, loginPassword);
+                    
+                    // If login is valid, and we haven't synced texts during a remote login fallback, sync texts now!
+                    if (result.isValid && !result.syncedTexts) {
+                       const syncRes = await syncTextsFromRemoteDB(loginId, loginPassword);
+                       if (syncRes && syncRes.passwordMismatch) {
+                         result = { isValid: false, error: 'كلمة المرور خطا' };
+                         // Wipe the stale local db entry
+                         initLocalDB().then(db => {
+                            const tx = db.transaction('users', 'readwrite');
+                            tx.objectStore('users').delete(loginId);
+                         }).catch(() => {});
+                       }
                     }
-                  }
-                })();
-              }}
-              disabled={loginId.length !== 5 || loginPassword.length !== 5 || isLoggingIn || loginLockoutTimer > 0}
-              className={`w-full font-medium py-3 px-8 rounded-full shadow-[0_0_15px_rgba(255,255,255,0.2)] transition-all tracking-wide ${loginId.length === 5 && loginPassword.length === 5 && !isLoggingIn && loginLockoutTimer === 0 ? 'bg-white hover:bg-gray-100 text-black cursor-pointer hover:scale-105 active:scale-95' : 'bg-transparent border border-gray-600 text-gray-500 cursor-not-allowed'} flex flex-col items-center justify-center min-h-[56px]`}
-            >
-              {isLoggingIn ? (
-                <div className="flex flex-col items-center justify-center pt-1">
-                  <div className="w-5 h-5 border-2 border-gray-500 border-t-white rounded-full animate-spin"></div>
-                </div>
-              ) : loginLockoutTimer > 0 ? (
-                <span className="text-lg">انتظر {loginLockoutTimer} ثانية</span>
-              ) : (
-                <span className="text-lg">دخول</span>
-              )}
-            </button>
+                    
+                    setIsLoggingIn(false);
+                    
+                    if (result.isValid) {
+                      localStorage.removeItem(`login_attempts_${loginId}`);
+                      localStorage.removeItem(`login_lockout_${loginId}`);
+                      setCurrentUserId(loginId);
+                      setCurrentPassword(loginPassword);
+                      saveSession(loginId, loginPassword);
+                      setCurrentView('dashboard');
+                    } else {
+                      if (result.error === 'لا يوجد المعرف') {
+                        setLoginIdError('عذرا هذا المعرف غير موجود');
+                      } else if (result.error === 'كلمة المرور خطا') {
+                        const attemptsStr = localStorage.getItem(`login_attempts_${loginId}`);
+                        let attempts = attemptsStr ? parseInt(attemptsStr) : 0;
+                        attempts += 1;
+                        if (attempts >= 5) {
+                          const expiry = Date.now() + 300000;
+                          localStorage.setItem(`login_lockout_${loginId}`, expiry.toString());
+                          localStorage.setItem(`login_attempts_${loginId}`, "0");
+                          setLoginLockoutTimer(300);
+                          setLoginPasswordError('تم الحظر مؤقتا يرجى الانتظار');
+                          
+                          const attemptId = Date.now().toString() + Math.random().toString().slice(2, 8);
+                          localStorage.setItem(`lockout_attemptid_${loginId}`, attemptId);
+                          
+                          appendToGoogleSheet({
+                            action: "ADD",
+                            id: `${loginId}_LOCKOUT`,
+                            userid: "USER_AUTH_LOCKOUT",
+                            text: expiry.toString(),
+                            timestamp: Date.now(),
+                            starred: 0
+                          }).catch(e => console.error(e));
+                          
+                          appendToGoogleSheet({
+                            action: "ADD",
+                            id: `ATTEMPT_${loginId}_${attemptId}`,
+                            userid: "USER_AUTH_ATTEMPT",
+                            text: JSON.stringify({
+                               attemptId,
+                               device: navigator.platform || "جهاز غير معروف",
+                               time: Date.now(),
+                               lockoutDuration: 300,
+                               action: 'PENDING'
+                            }),
+                            timestamp: Date.now(),
+                            starred: 0
+                          }).catch(e => console.error(e));
+                          
+                        } else {
+                          localStorage.setItem(`login_attempts_${loginId}`, attempts.toString());
+                          setLoginPasswordError(`عذرا كلمة المرور خاطئة (يتبقى ${5 - attempts} محاولات)`);
+                        }
+                      } else if (result.error === 'تم الحظر مؤقتا يرجى الانتظار') {
+                        setLoginPasswordError(result.error);
+                        const lockoutStr = localStorage.getItem(`login_lockout_${loginId}`);
+                        if (lockoutStr) {
+                          const t = parseInt(lockoutStr);
+                          const diff = Math.ceil((t - Date.now()) / 1000);
+                          if (diff > 0) setLoginLockoutTimer(diff);
+                        }
+                      } else {
+                        alert(result.error);
+                      }
+                    }
+                  })();
+                }}
+                disabled={loginId.length !== 5 || loginPassword.length !== 5 || isLoggingIn || loginLockoutTimer > 0}
+                className={`w-full font-medium py-3 px-8 rounded-full shadow-[0_0_15px_rgba(255,255,255,0.2)] transition-all tracking-wide ${loginId.length === 5 && loginPassword.length === 5 && !isLoggingIn && loginLockoutTimer === 0 ? 'bg-white hover:bg-gray-100 text-black cursor-pointer hover:scale-105 active:scale-95' : 'bg-transparent border border-gray-600 text-gray-500 cursor-not-allowed'} flex flex-col items-center justify-center min-h-[56px]`}
+              >
+                {isLoggingIn ? (
+                  <div className="flex flex-col items-center justify-center pt-1">
+                    <div className="w-5 h-5 border-2 border-gray-500 border-t-white rounded-full animate-spin"></div>
+                  </div>
+                ) : loginLockoutTimer > 0 ? (
+                  <span className="text-lg">انتظر {loginLockoutTimer} ثانية</span>
+                ) : (
+                  <span className="text-lg">دخول</span>
+                )}
+              </button>
+            )}
 
             <button 
               onClick={() => setCurrentView('home')} 
@@ -1841,11 +2247,11 @@ export default function App() {
       )}
 
       {currentView === 'dashboard' && texts.length > 0 && (
-        <div className="absolute inset-0 pt-[156px] px-6 flex flex-col items-start pointer-events-none pb-6 w-full h-full overflow-hidden" dir="ltr">
+        <div className="absolute inset-0 pt-[140px] px-3 sm:px-6 flex flex-col items-center pointer-events-none pb-6 w-full h-full overflow-hidden" dir="ltr">
           {/* Texts list */}
           <div className="flex-1 w-full pointer-events-auto overflow-y-auto custom-scrollbar" dir="rtl">
             <>
-              <div className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-4 pb-12 w-full items-start" dir="ltr">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 min-[1800px]:grid-cols-6 gap-3 sm:gap-4 pb-12 w-full items-start" dir="ltr">
                 {sortedTexts.map((item) => {
                   // Optimize parsing: don't use split unless actually very long 
                 const currentLimit = expandedLengths[item.id] || 50;
@@ -1900,7 +2306,7 @@ export default function App() {
                             setTexts(prev => prev.map(t => t.id === item.id ? updatedItem : t));
                             saveTextToDB(updatedItem, true).catch(e => console.error(e));
                           }}
-                          className={`p-1.5 transition-all cursor-pointer outline-none bg-transparent border-none ${item.starred ? 'opacity-100 text-yellow-500 hover:text-yellow-400' : 'opacity-100 lg:opacity-0 lg:group-hover:opacity-100 text-gray-500 hover:text-white'}`}
+                          className={`p-1.5 transition-all cursor-pointer outline-none bg-transparent border-none ${item.starred ? 'opacity-100 text-yellow-500 hover:text-yellow-400' : 'hover-actions-only text-gray-500 hover:text-white'}`}
                           title={item.starred ? "إزالة التمييز" : "تثبيت كمفضلة"}
                         >
                           <Star size={22} strokeWidth={item.starred ? 2 : 1.5} className={item.starred ? "fill-yellow-500" : ""} />
@@ -1914,7 +2320,7 @@ export default function App() {
                               setEditTextInput(item.text);
                               setShowEditTextPopup(true);
                             }}
-                            className="p-1.5 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity bg-transparent text-gray-400 hover:text-white"
+                            className="p-1.5 hover-actions-only transition-opacity bg-transparent text-gray-400 hover:text-white"
                             title="تعديل النص"
                           >
                             <Pencil size={18} strokeWidth={1.5} />
@@ -1931,14 +2337,14 @@ export default function App() {
                             }
                             setShareModalText(item.text);
                           }}
-                          className="p-1.5 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity bg-transparent text-gray-400 hover:text-white"
+                          className="p-1.5 hover-actions-only transition-opacity bg-transparent text-gray-400 hover:text-white"
                           title="مشاركة"
                         >
                           <Share2 size={18} strokeWidth={1.5} />
                         </button>
                         <button
                           onClick={(e) => handleCopy(item.text, item.id, e)}
-                          className="p-1.5 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity bg-transparent text-gray-400 hover:text-white"
+                          className="p-1.5 hover-actions-only transition-opacity bg-transparent text-gray-400 hover:text-white"
                           title="نسخ"
                         >
                           {copiedId === item.id ? <Check size={18} strokeWidth={1.5} className="text-green-500" /> : <Copy size={18} strokeWidth={1.5} />}
@@ -2177,7 +2583,7 @@ export default function App() {
                 )}
               </div>
               
-              <div className="w-full mt-1">
+              <div className="w-full mt-2 flex items-center justify-between">
                 <button
                   onClick={() => {
                     setVerifyAction('setup_forgot_pwd');
@@ -2186,10 +2592,25 @@ export default function App() {
                     setVerifyError(false);
                     setVerifyPasswordInput('');
                   }}
-                  className="text-right text-sm text-gray-400 hover:text-white transition-colors cursor-pointer flex items-center gap-2"
+                  className="text-right text-sm text-gray-400 hover:text-white transition-colors cursor-pointer"
                 >
-                  اظهار زر نسيت كلمة المرور عند تسجيل الدخول {isForgotPasswordEnabled && <Check size={14} className="text-green-500" />}
+                  اظهار زر نسيت كلمة المرور عند تسجيل الدخول
                 </button>
+                {fpSetupImages.length === 5 && (
+                  <button
+                    onClick={() => {
+                      setVerifyAction('toggle_forgot_pwd');
+                      setShowVerifyPassword(true);
+                      setShowUserIdPassword(false);
+                      setVerifyError(false);
+                      setVerifyPasswordInput('');
+                    }}
+                    className={`w-5 h-5 rounded border flex items-center justify-center transition-colors cursor-pointer shrink-0 ${isForgotPasswordEnabled ? 'bg-green-500/20 border-green-500' : 'border-gray-500 hover:border-white'}`}
+                    title={isForgotPasswordEnabled ? "إلغاء الميزة" : "تفعيل الميزة"}
+                  >
+                    {isForgotPasswordEnabled && <Check size={14} strokeWidth={3} className="text-green-500" />}
+                  </button>
+                )}
               </div>
 
               {isEditingPassword && (
@@ -2219,7 +2640,10 @@ export default function App() {
               {showVerifyPassword && !showUserIdPassword && !isEditingPassword && (
                 <div className="flex flex-col gap-2 mt-2 animate-in fade-in duration-200">
                   <div className="text-right text-gray-400 text-xs">
-                    {verifyAction === 'edit' ? 'يرجى تأكيد كلمة المرور الحالية للتعديل' : verifyAction === 'setup_forgot_pwd' ? 'يرجى تأكيد كلمة المرور للوصول إلى إعدادات الأمان' : 'يرجى تأكيد كلمة المرور لعرضها'}
+                    {verifyAction === 'edit' ? 'يرجى ادخال كلمة المرور الحالية للتعديل' 
+                    : verifyAction === 'setup_forgot_pwd' ? 'يرجى ادخال كلمة المرور لتفعيل اظهار زر نسيت كلمة المرور' 
+                    : verifyAction === 'toggle_forgot_pwd' ? (isForgotPasswordEnabled ? 'يرجى ادخال كلمة المرور لاخفاء زر نسيت كلمة المرور' : 'يرجى ادخال كلمة المرور لاظهار زر نسيت كلمة المرور') 
+                    : 'يرجى ادخال كلمة المرور لعرضها'}
                   </div>
                   <div className="flex gap-2">
                     <input 
@@ -2253,6 +2677,18 @@ export default function App() {
                             setInitialFpSetupImagesStr(JSON.stringify(fpSetupImages));
                             setShowForgotPasswordSetup(true);
                             setShowUserIdPopup(false);
+                          } else if (verifyAction === 'toggle_forgot_pwd') {
+                            const newEnabledState = !isForgotPasswordEnabled;
+                            appendToGoogleSheet({
+                               action: "ADD",
+                               id: `${currentUserId}_SECIMG`,
+                               userid: "USER_AUTH_SECURITY",
+                               text: JSON.stringify({ enabled: newEnabledState, images: fpSetupImages.map(img => ({ originalDataUrl: img.dataUrl, keyword: img.keyword })) }),
+                               timestamp: Date.now(),
+                               starred: 0
+                            }).catch(() => {});
+                            setIsForgotPasswordEnabled(newEnabledState);
+                            localStorage.setItem(`fp_setup_${currentUserId}`, JSON.stringify({ enabled: newEnabledState, images: fpSetupImages }));
                           }
                           setShowVerifyPassword(false);
                           setVerifyPasswordInput('');
@@ -2268,14 +2704,6 @@ export default function App() {
                             localStorage.setItem(`verify_attempts_${currentUserId}`, "0");
                             setVerifyLockoutTimer(300);
                             setVerifyErrorMsg('تم الحظر مؤقتا يرجى الانتظار');
-                            appendToGoogleSheet({
-                              action: "ADD",
-                              id: `${currentUserId}_LOCKOUT`,
-                              userid: "USER_AUTH_LOCKOUT",
-                              text: expiry.toString(),
-                              timestamp: Date.now(),
-                              starred: 0
-                            }).catch(e => console.error(e));
                           } else {
                             localStorage.setItem(`verify_attempts_${currentUserId}`, attempts.toString());
                             setVerifyErrorMsg(`كلمة المرور خاطئة (يتبقى ${5 - attempts} محاولات)`);
@@ -2308,6 +2736,434 @@ export default function App() {
                 تسجيل الخروج
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showDeviceVerifyPopup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4">
+          <div className="bg-[#111] border border-white/10 p-8 rounded-3xl flex flex-col items-center gap-6 w-full max-w-sm shadow-[0_0_40px_rgba(0,0,0,0.8)] relative">
+            <button 
+              onClick={() => {
+                setShowDeviceVerifyPopup(false);
+                setVerifyPasswordInput('');
+                setVerifyError(false);
+                setShowNotificationsPopup(true);
+              }} 
+              className="absolute top-6 left-6 text-gray-500 hover:text-white transition-colors cursor-pointer"
+            >
+              <X size={20} />
+            </button>
+            <div className="text-xl text-gray-300 font-light mt-2 mb-4">تأكيد العملية</div>
+            
+            <div className="flex flex-col gap-2 animate-in fade-in duration-200 w-full">
+              <div className="text-right text-gray-400 text-xs">
+                {verifyAction === 'reject_device' ? 'يرجى ادخال كلمة المرور لرفض الدخول'
+                : verifyAction === 'accept_device' ? 'يرجى ادخال كلمة المرور لقبول الدخول'
+                : verifyAction === 'logout_device' ? 'يرجى ادخال كلمة المرور لتسجيل خروجه'
+                : verifyAction === 'ban_device' ? 'يرجى ادخال كلمة المرور لمنعه نهائيا'
+                : verifyAction === 'chat_device' ? 'يرجى ادخال كلمة المرور لارسال رسالة' : ''}
+              </div>
+              <div className="flex gap-2">
+                <input 
+                  type="password"
+                  value={verifyPasswordInput}
+                  disabled={verifyLockoutTimer > 0}
+                  onChange={(e) => {
+                    setVerifyPasswordInput(e.target.value.replace(/[^0-9]/g, ''));
+                    setVerifyError(false);
+                    setVerifyErrorMsg('');
+                  }}
+                  maxLength={5}
+                  className={`flex-1 bg-white/5 border rounded-xl p-3 text-center text-xl tracking-[0.5em] text-white focus:outline-none transition-colors font-mono ${verifyError ? 'border-red-500/50 focus:border-red-500' : 'border-white/20 focus:border-white'}`}
+                  placeholder="•••••"
+                  dir="ltr"
+                  autoFocus
+                />
+                <button 
+                  onClick={() => {
+                    if (verifyLockoutTimer > 0) return;
+                    if (verifyPasswordInput === currentPassword || (verifyPasswordInput && currentPassword && parseInt(verifyPasswordInput, 10) === parseInt(currentPassword, 10))) {
+                      localStorage.removeItem(`verify_attempts_${currentUserId}`);
+                      localStorage.removeItem(`verify_lockout_${currentUserId}`);
+                      
+                      if ((verifyAction === 'reject_device' || verifyAction === 'accept_device' || verifyAction === 'chat_device' || verifyAction === 'logout_device' || verifyAction === 'ban_device') && activeChatAttempt) {
+                         const actionStr = verifyAction === 'reject_device' ? 'REJECT' : verifyAction === 'accept_device' ? 'ACCEPT' : verifyAction === 'logout_device' ? 'FORCE_LOGOUT' : verifyAction === 'ban_device' ? 'BAN' : 'CHAT';
+                         appendToGoogleSheet({
+                           action: "ADD",
+                           id: `RES_${currentUserId}_${activeChatAttempt.attemptId}`,
+                           userid: "USER_AUTH_RES",
+                           text: JSON.stringify({ action: actionStr, attemptId: activeChatAttempt.attemptId, pass: actionStr === 'ACCEPT' ? currentPassword : null }),
+                           timestamp: Date.now(),
+                           starred: 0
+                         });
+                         setSecurityAttempts(prev => prev.map(a => a.attemptId === activeChatAttempt.attemptId ? {...a, action: actionStr} : a));
+                         
+                         setShowDeviceVerifyPopup(false);
+                         setVerifyPasswordInput('');
+                         setVerifyError(false);
+                         setVerifyErrorMsg('');
+                         
+                         if (actionStr === 'CHAT') {
+                             setShowOwnerChatPopup(true);
+                         } else {
+                             setShowNotificationsPopup(true);
+                         }
+                      }
+                    } else {
+                      const attemptsStr = localStorage.getItem(`verify_attempts_${currentUserId}`);
+                      let attempts = attemptsStr ? parseInt(attemptsStr) : 0;
+                      attempts += 1;
+                      if (attempts >= 5) {
+                        const expiry = Date.now() + 300000;
+                        localStorage.setItem(`verify_lockout_${currentUserId}`, expiry.toString());
+                        localStorage.setItem(`verify_attempts_${currentUserId}`, "0");
+                        setVerifyLockoutTimer(300);
+                        setVerifyErrorMsg('تم الحظر مؤقتا يرجى الانتظار');
+                      } else {
+                        localStorage.setItem(`verify_attempts_${currentUserId}`, attempts.toString());
+                        setVerifyErrorMsg(`كلمة المرور خاطئة (يتبقى ${5 - attempts} محاولات)`);
+                      }
+                      setVerifyPasswordInput('');
+                      setVerifyError(true);
+                    }
+                  }}
+                  disabled={verifyLockoutTimer > 0}
+                  className={`bg-transparent px-3 text-sm font-medium transition-colors outline-none ${verifyLockoutTimer > 0 ? 'text-gray-600 cursor-not-allowed' : 'text-gray-400 hover:text-white cursor-pointer'}`}
+                >
+                  {verifyLockoutTimer > 0 ? 'محظور' : 'تأكيد'}
+                </button>
+              </div>
+              {(verifyError || verifyLockoutTimer > 0) && (
+                <div className="text-red-400 text-xs text-right animate-in fade-in zoom-in-95 duration-200">
+                  {verifyLockoutTimer > 0 ? `تم الحظر مؤقتا يرجى الانتظار ${verifyLockoutTimer} ثانية` : verifyErrorMsg || 'كلمة المرور خاطئة'}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showNotificationsPopup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4" onClick={() => setShowNotificationsPopup(false)}>
+          <div 
+             className="bg-[#111] border border-white/10 p-6 flex flex-col w-full max-w-lg shadow-[0_0_40px_rgba(0,0,0,0.8)] relative max-h-[450px] rounded-3xl"
+             onClick={(e) => e.stopPropagation()}
+          >
+             <button 
+                  onClick={() => setShowNotificationsPopup(false)}
+                  className="absolute p-3 top-3 left-3 text-gray-500 hover:text-white transition-colors cursor-pointer bg-transparent border-none outline-none z-10"
+             >
+                  <X size={24} strokeWidth={1.5} />
+             </button>
+             <div className="text-xl text-white font-medium mb-6 text-center pt-2">الاشعارات</div>
+             
+             <div ref={notifScrollRef} className="overflow-y-auto custom-scrollbar flex-1 flex flex-col gap-4">
+               {notificationsList.length === 0 ? (
+                 <div className="flex flex-col items-center justify-center py-10 opacity-50">
+                    <Bell size={48} strokeWidth={1} className="text-white mb-4" />
+                    <div className="text-xl text-white font-medium tracking-wide">لا توجد اشعارات</div>
+                 </div>
+               ) : (
+                 notificationsList.map((attempt, idx) => {
+                     const date = new Date(attempt.time);
+                     const lockoutMinutes = Math.floor(attempt.lockoutDuration / 60);
+                     return (
+                        <div key={idx} data-attempt-id={attempt.attemptId} className="notification-item bg-white/5 border border-white/10 rounded-2xl p-4 flex flex-col gap-3">
+                           <div className="flex items-start justify-between">
+                              <span className="text-sm text-gray-400 font-mono" dir="ltr">
+                                 {date.getHours().toString().padStart(2, '0')}:{date.getMinutes().toString().padStart(2, '0')}:{date.getSeconds().toString().padStart(2, '0')} - {date.getDate()}/{date.getMonth()+1}/{date.getFullYear()}
+                              </span>
+                              <div className="flex items-center gap-3">
+                                 <button
+                                    onClick={() => {
+                                        setHiddenNotifications(prev => {
+                                            const next = new Set(prev);
+                                            next.add(attempt.attemptId);
+                                            return next;
+                                        });
+                                        // Delete from IndexedDB
+                                        initLocalDB().then(db => {
+                                           const tx = db.transaction('notifications', 'readwrite');
+                                           tx.objectStore('notifications').delete(attempt.attemptId);
+                                        }).catch(()=>{});
+                                        // Delete from Google Sheets (attempts are stored as ATTEMPT_{userId}_{attemptId})
+                                        appendToGoogleSheet({
+                                           action: "DELETE",
+                                           id: `ATTEMPT_${currentUserId}_${attempt.attemptId}`,
+                                           userid: "DELETED",
+                                           text: "[[DELETED]]",
+                                           timestamp: Date.now(),
+                                           starred: 0
+                                        }).catch(()=>{});
+                                        // Remove from state
+                                        setSecurityAttempts(prev => prev.filter(a => a.attemptId !== attempt.attemptId));
+                                    }}
+                                    className="text-gray-500 hover:text-red-500 transition-colors cursor-pointer outline-none border-none bg-transparent p-1"
+                                    title="حذف الاشعار"
+                                 >
+                                    <Trash2 size={20} />
+                                 </button>
+                              </div>
+                           </div>
+                           <div className="text-white text-right leading-relaxed" dir="rtl">
+                              يحاول جهاز {attempt.device} الدخول الى حسابك و تم وضع له المحاولة بعد {lockoutMinutes} دقائق
+                           </div>
+                           <div className="flex flex-wrap gap-2 mt-3 justify-end" dir="rtl">
+                                {attempt.action === 'PENDING' || attempt.action === 'CHAT' || attempt.action === 'CLOSE_CHAT' ? (
+                                  <>
+                                    <button onClick={() => { setVerifyAction('reject_device'); setActiveChatAttempt(attempt); setShowDeviceVerifyPopup(true); setShowNotificationsPopup(false); }} className="px-4 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">رفض الدخول</button>
+                                    <button onClick={() => { setVerifyAction('accept_device'); setActiveChatAttempt(attempt); setShowDeviceVerifyPopup(true); setShowNotificationsPopup(false); }} className="px-4 py-2 bg-green-500/20 text-green-400 hover:bg-green-500/30 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">قبول الدخول</button>
+                                    {attempt.action === 'CHAT' ? (
+                                      <button onClick={() => { setActiveChatAttempt(attempt); setShowOwnerChatPopup(true); setShowNotificationsPopup(false); }} className="px-5 py-2 bg-blue-500 text-white hover:bg-blue-600 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">فتح المحادثة</button>
+                                    ) : (
+                                      <button onClick={() => { setVerifyAction('chat_device'); setActiveChatAttempt(attempt); setShowDeviceVerifyPopup(true); setShowNotificationsPopup(false); }} className="px-4 py-2 bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">ارسال له رسالة</button>
+                                    )}
+                                  </>
+                                ) : attempt.action === 'REJECT' ? (
+                                  <>
+                                    <div className="text-red-400 font-medium ml-auto my-auto px-2">تم رفض الدخول</div>
+                                    <button onClick={() => { setVerifyAction('accept_device'); setActiveChatAttempt(attempt); setShowDeviceVerifyPopup(true); setShowNotificationsPopup(false); }} className="px-4 py-2 bg-green-500/20 text-green-400 hover:bg-green-500/30 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">قبول الدخول</button>
+                                  </>
+                                ) : attempt.action === 'ACCEPT' ? (
+                                  <>
+                                    <div className="text-green-400 font-medium ml-auto my-auto px-2">تم قبول الدخول</div>
+                                    <button onClick={() => { setVerifyAction('logout_device'); setActiveChatAttempt(attempt); setShowDeviceVerifyPopup(true); setShowNotificationsPopup(false); }} className="px-4 py-2 bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">تسجيل خروج</button>
+                                    <button onClick={() => { setVerifyAction('ban_device'); setActiveChatAttempt(attempt); setShowDeviceVerifyPopup(true); setShowNotificationsPopup(false); }} className="px-4 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">عدم الدخول ابدا</button>
+                                  </>
+                                ) : attempt.action === 'FORCE_LOGOUT' ? (
+                                  <>
+                                    <div className="text-gray-400 font-medium ml-auto my-auto px-2">تم تسجيل الخروج</div>
+                                    <button onClick={() => { setVerifyAction('accept_device'); setActiveChatAttempt(attempt); setShowDeviceVerifyPopup(true); setShowNotificationsPopup(false); }} className="px-4 py-2 bg-green-500/20 text-green-400 hover:bg-green-500/30 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">قبول الدخول</button>
+                                  </>
+                                ) : attempt.action === 'BAN' ? (
+                                  <>
+                                    <div className="text-red-500 font-medium ml-auto my-auto px-2">تم المنع النهائي</div>
+                                    <button onClick={() => { setVerifyAction('accept_device'); setActiveChatAttempt(attempt); setShowDeviceVerifyPopup(true); setShowNotificationsPopup(false); }} className="px-4 py-2 bg-green-500/20 text-green-400 hover:bg-green-500/30 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">قبول الدخول</button>
+                                  </>
+                                ) : null}
+                             </div>
+                        </div>
+                     )
+                 })
+               )}
+             </div>
+             
+             {notificationsList.length > 0 && (
+                 <div className="pt-4 mt-4 border-t border-white/10 flex justify-start w-full" dir="ltr">
+                     <button 
+                        onClick={() => {
+                            const allIds = notificationsList.map(a => a.attemptId);
+                            setHiddenNotifications(prev => new Set([...prev, ...allIds]));
+                            
+                            initLocalDB().then(db => {
+                               const tx = db.transaction('notifications', 'readwrite');
+                               const store = tx.objectStore('notifications');
+                               allIds.forEach(id => store.delete(id));
+                            }).catch(()=>{});
+
+                            Promise.all(allIds.map(id => 
+                                appendToGoogleSheet({
+                                   action: "DELETE",
+                                   id: `ATTEMPT_${currentUserId}_${id}`,
+                                   userid: "DELETED",
+                                   text: "[[DELETED]]",
+                                   timestamp: Date.now(),
+                                   starred: 0
+                                })
+                            )).catch(()=>{});
+                            
+                            setSecurityAttempts(prev => prev.filter(a => !allIds.includes(a.attemptId)));
+                        }}
+                        className="text-red-500 hover:text-red-400 text-sm font-medium transition-colors bg-red-500/10 hover:bg-red-500/20 px-4 py-2 rounded-xl opacity-100 cursor-pointer w-auto"
+                     >
+                         حذف الكل
+                     </button>
+                 </div>
+             )}
+          </div>
+        </div>
+      )}
+
+      {lockoutChatVisible && currentView === 'login' && loginLockoutTimer > 0 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4">
+          <div 
+             className="bg-[#111] border border-white/10 p-6 flex flex-col w-full max-w-lg shadow-[0_0_40px_rgba(0,0,0,0.8)] relative h-[80vh] rounded-3xl"
+             onClick={(e) => e.stopPropagation()}
+          >
+             <div className="text-xl text-white font-medium mb-4 text-center pt-2">محادثة مع المالك (الحساب مغلق)</div>
+             <div className="text-center text-red-400 text-sm mb-4">
+                انت محظور لمدة {Math.ceil(loginLockoutTimer / 60)} دقائق
+             </div>
+             
+             <div className="flex-1 overflow-y-auto custom-scrollbar flex flex-col gap-3 pr-2 mb-4">
+                 {lockoutChatMessages.map((msg, idx) => {
+                     const isAttacker = msg.sender === 'ATTACKER';
+                     return (
+                        <div key={idx} className={`flex w-full ${isAttacker ? 'justify-end' : 'justify-start'}`}>
+                           <div className={`p-3 rounded-2xl max-w-[80%] ${isAttacker ? 'bg-blue-500/20 border border-blue-500/30 text-blue-100 rounded-tr-sm' : 'bg-white/10 border border-white/10 text-white rounded-tl-sm'}`}>
+                               <div dir="rtl" className="whitespace-pre-wrap">{msg.message}</div>
+                               <div className="text-[10px] opacity-50 mt-1 text-right font-mono" dir="ltr">
+                                  {new Date(msg.time).getHours().toString().padStart(2, '0')}:{new Date(msg.time).getMinutes().toString().padStart(2, '0')}:{new Date(msg.time).getSeconds().toString().padStart(2, '0')} - {new Date(msg.time).getDate()}/{new Date(msg.time).getMonth()+1}/{new Date(msg.time).getFullYear()}
+                               </div>
+                           </div>
+                        </div>
+                     );
+                 })}
+             </div>
+             
+             <div className="flex gap-2">
+                 <button 
+                    onClick={() => {
+                        if (!chatInputValue.trim()) return;
+                        const attemptId = localStorage.getItem(`lockout_attemptid_${loginId}`);
+                        if (!attemptId) return;
+                        const newChat = { attemptId, sender: 'ATTACKER', message: chatInputValue, time: Date.now() };
+                        appendToGoogleSheet({
+                           action: "ADD",
+                           id: `CHAT_${loginId}_${attemptId}_${Date.now()}_${Math.random()}`,
+                           userid: "USER_AUTH_CHAT",
+                           text: JSON.stringify(newChat),
+                           timestamp: Date.now(),
+                           starred: 0
+                        });
+                        setLockoutChatMessages(prev => [...prev, newChat]);
+                        setChatInputValue('');
+                    }}
+                    className="p-3 bg-blue-500 hover:bg-blue-600 outline-none border-none text-white rounded-xl transition-colors shrink-0"
+                 >
+                    <Send size={20} className="rotate-180" />
+                 </button>
+                 <input
+                    type="text"
+                    value={chatInputValue}
+                    onChange={e => setChatInputValue(e.target.value)}
+                    onKeyDown={e => {
+                        if (e.key === 'Enter') {
+                            if (!chatInputValue.trim()) return;
+                            const attemptId = localStorage.getItem(`lockout_attemptid_${loginId}`);
+                            if (!attemptId) return;
+                            const newChat = { attemptId, sender: 'ATTACKER', message: chatInputValue, time: Date.now() };
+                            appendToGoogleSheet({
+                               action: "ADD",
+                               id: `CHAT_${loginId}_${attemptId}_${Date.now()}_${Math.random()}`,
+                               userid: "USER_AUTH_CHAT",
+                               text: JSON.stringify(newChat),
+                               timestamp: Date.now(),
+                               starred: 0
+                            });
+                            setLockoutChatMessages(prev => [...prev, newChat]);
+                            setChatInputValue('');
+                        }
+                    }}
+                    dir="rtl"
+                    className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none focus:border-white/30"
+                    placeholder="اكتب رسالة..."
+                 />
+             </div>
+          </div>
+        </div>
+      )}
+
+      {showOwnerChatPopup && activeChatAttempt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4" onClick={() => {
+           const actionStr = 'CLOSE_CHAT';
+           appendToGoogleSheet({
+             action: "ADD",
+             id: `RES_${currentUserId}_${activeChatAttempt.attemptId}`,
+             userid: "USER_AUTH_RES",
+             text: JSON.stringify({ action: actionStr, attemptId: activeChatAttempt.attemptId, pass: null }),
+             timestamp: Date.now(),
+             starred: 0
+           });
+           setSecurityAttempts(prev => prev.map(a => a.attemptId === activeChatAttempt.attemptId ? {...a, action: actionStr} : a));
+           setShowOwnerChatPopup(false);
+        }}>
+          <div 
+             className="bg-[#111] border border-white/10 p-6 flex flex-col w-full max-w-lg shadow-[0_0_40px_rgba(0,0,0,0.8)] relative h-[80vh] rounded-3xl"
+             onClick={(e) => e.stopPropagation()}
+          >
+             <button 
+                  onClick={() => {
+                     const actionStr = 'CLOSE_CHAT';
+                     appendToGoogleSheet({
+                       action: "ADD",
+                       id: `RES_${currentUserId}_${activeChatAttempt.attemptId}`,
+                       userid: "USER_AUTH_RES",
+                       text: JSON.stringify({ action: actionStr, attemptId: activeChatAttempt.attemptId, pass: null }),
+                       timestamp: Date.now(),
+                       starred: 0
+                     });
+                     setSecurityAttempts(prev => prev.map(a => a.attemptId === activeChatAttempt.attemptId ? {...a, action: actionStr} : a));
+                     setShowOwnerChatPopup(false);
+                  }}
+                  className="absolute p-3 top-3 left-3 text-gray-500 hover:text-white transition-colors cursor-pointer bg-transparent border-none outline-none z-10"
+             >
+                  <X size={24} strokeWidth={1.5} />
+             </button>
+             <div className="text-xl text-white font-medium mb-4 text-center pt-2">محادثة مع {activeChatAttempt.device}</div>
+             
+             <div className="flex-1 overflow-y-auto custom-scrollbar flex flex-col gap-3 pr-2 mb-4">
+                 {chatsData.filter(c => c.attemptId === activeChatAttempt.attemptId).sort((a,b) => a.time - b.time).map((msg, idx) => {
+                     const isOwner = msg.sender === 'OWNER';
+                     return (
+                        <div key={idx} className={`flex w-full ${isOwner ? 'justify-end' : 'justify-start'}`}>
+                           <div className={`p-3 rounded-2xl max-w-[80%] ${isOwner ? 'bg-blue-500/20 border border-blue-500/30 text-blue-100 rounded-tr-sm' : 'bg-white/10 border border-white/10 text-white rounded-tl-sm'}`}>
+                               <div dir="rtl" className="whitespace-pre-wrap">{msg.message}</div>
+                               <div className="text-[10px] opacity-50 mt-1 text-right font-mono" dir="ltr">
+                                  {new Date(msg.time).getHours().toString().padStart(2, '0')}:{new Date(msg.time).getMinutes().toString().padStart(2, '0')}:{new Date(msg.time).getSeconds().toString().padStart(2, '0')} - {new Date(msg.time).getDate()}/{new Date(msg.time).getMonth()+1}/{new Date(msg.time).getFullYear()}
+                               </div>
+                           </div>
+                        </div>
+                     );
+                 })}
+             </div>
+             
+             <div className="flex gap-2">
+                 <button 
+                    onClick={() => {
+                        if (!chatInputValue.trim()) return;
+                        const newChat = { attemptId: activeChatAttempt.attemptId, sender: 'OWNER', message: chatInputValue, time: Date.now() };
+                        appendToGoogleSheet({
+                           action: "ADD",
+                           id: `CHAT_${currentUserId}_${activeChatAttempt.attemptId}_${Date.now()}_${Math.random()}`,
+                           userid: "USER_AUTH_CHAT",
+                           text: JSON.stringify(newChat),
+                           timestamp: Date.now(),
+                           starred: 0
+                        });
+                        setChatsData(prev => [...prev, newChat]);
+                        setChatInputValue('');
+                    }}
+                    className="p-3 bg-blue-500 hover:bg-blue-600 outline-none border-none text-white rounded-xl transition-colors shrink-0"
+                 >
+                    <Send size={20} className="rotate-180" />
+                 </button>
+                 <input
+                    type="text"
+                    value={chatInputValue}
+                    onChange={e => setChatInputValue(e.target.value)}
+                    onKeyDown={e => {
+                        if (e.key === 'Enter') {
+                            if (!chatInputValue.trim()) return;
+                            const newChat = { attemptId: activeChatAttempt.attemptId, sender: 'OWNER', message: chatInputValue, time: Date.now() };
+                            appendToGoogleSheet({
+                               action: "ADD",
+                               id: `CHAT_${currentUserId}_${activeChatAttempt.attemptId}_${Date.now()}_${Math.random()}`,
+                               userid: "USER_AUTH_CHAT",
+                               text: JSON.stringify(newChat),
+                               timestamp: Date.now(),
+                               starred: 0
+                            });
+                            setChatsData(prev => [...prev, newChat]);
+                            setChatInputValue('');
+                        }
+                    }}
+                    dir="rtl"
+                    className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none focus:border-white/30"
+                    placeholder="اكتب رسالة..."
+                 />
+             </div>
           </div>
         </div>
       )}
@@ -2801,19 +3657,19 @@ export default function App() {
             dir="rtl"
           >
             <div className="flex items-center justify-between p-6 border-b border-white/5 shrink-0">
+              <div className="w-8"></div>
+              <div className="text-xl text-gray-200 font-medium tracking-wide">اظهار زر نسيت كلمة المرور</div>
               <button 
                 onClick={() => { setShowForgotPasswordSetup(false); setShowUserIdPopup(true); }} 
                 className="p-1 text-gray-500 hover:text-white transition-colors cursor-pointer"
               >
                 <X size={24} />
               </button>
-              <div className="text-xl text-gray-200 font-medium tracking-wide">اظهار زر نسيت كلمة المرور</div>
-              <div className="w-8"></div>
             </div>
             
             <div className="p-6 overflow-y-auto custom-scrollbar flex flex-col gap-6">
               <div className="text-sm text-gray-400 text-center">
-                يجب إضافة 5 صور مختلفة وكتابة كلمة مفتاحية بالإنجليزية لكل صورة لتفعيل خاصية الاسترداد.
+                يرجى إضافة 5 صور مختلفة وكتابة وصف بالإنجليزية لكل صورة لتفعيل اظهار زر نسيت كلمة المرور
               </div>
               
               <div className="flex flex-col gap-4">
@@ -2827,8 +3683,8 @@ export default function App() {
                     >
                       <X size={16} />
                     </button>
-                    <div className="w-full flex justify-center bg-[#111] overflow-hidden min-h-[100px] h-32">
-                       <img src={img.dataUrl} className="object-cover h-full w-full" alt="fp-img" />
+                    <div className="w-full flex justify-center bg-[#111] overflow-hidden rounded-xl">
+                       <img src={img.dataUrl} className="object-contain w-full max-h-[400px]" alt="fp-img" />
                     </div>
                     <input 
                       type="text"
@@ -2853,7 +3709,7 @@ export default function App() {
                   className="hidden" 
                   id="fp-upload" 
                   onChange={async (e) => {
-                    const files = Array.from(e.target.files || []);
+                    const files = Array.from(e.target.files || []) as File[];
                     if (!files.length) return;
                     let newImages = [...fpSetupImages];
                     for (const file of files) {
@@ -2929,7 +3785,7 @@ export default function App() {
                       setShowUserIdPopup(true);
                     }}
                     disabled={!((fpSetupImages.length === 5 || fpSetupImages.length === 0) && !fpSetupImages.some(i => !i.keyword.trim()) && JSON.stringify(fpSetupImages) !== initialFpSetupImagesStr && !fpSetupLoading)}
-                    className={`w-28 py-2 rounded-full text-sm font-medium transition-all flex items-center justify-center min-h-[38px] ${((fpSetupImages.length === 5 || fpSetupImages.length === 0) && !fpSetupImages.some(i => !i.keyword.trim()) && JSON.stringify(fpSetupImages) !== initialFpSetupImagesStr && !fpSetupLoading) ? 'bg-white text-black hover:bg-gray-200 cursor-pointer shadow-[0_0_15px_rgba(255,255,255,0.2)] hover:scale-105 active:scale-95' : 'bg-white/10 text-gray-500 cursor-not-allowed'}`}
+                    className={`w-48 px-4 py-3 rounded-full text-base font-medium transition-all flex items-center justify-center min-h-[44px] ${((fpSetupImages.length === 5 || fpSetupImages.length === 0) && !fpSetupImages.some(i => !i.keyword.trim()) && JSON.stringify(fpSetupImages) !== initialFpSetupImagesStr && !fpSetupLoading) ? 'bg-white text-black hover:bg-gray-200 cursor-pointer shadow-[0_0_15px_rgba(255,255,255,0.2)] hover:scale-105 active:scale-95' : 'bg-white/10 text-gray-500 cursor-not-allowed'}`}
                  >
                    {fpSetupLoading ? (
                       <div className="w-4 h-4 border-2 border-gray-500 border-t-white rounded-full animate-spin"></div>
