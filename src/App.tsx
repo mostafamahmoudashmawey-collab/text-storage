@@ -6,6 +6,7 @@
 import { Eye, EyeOff, Plus, User, Trash2, Pencil, Copy, Check, X, Star, Share2, Mic, Image as ImageIcon, UploadCloud, Bell, Send, ShieldAlert, Moon, Sun } from 'lucide-react';
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { sendP2P } from './p2p';
+import { t, Language } from './i18n';
 
 const GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbyiEns9GDoPmwDTKM7WdmMghaKrB_K_QQ2CBuW__0CyZC2GS-axQOSC0H4WrUoW2A2xPQ/exec";
 
@@ -246,7 +247,7 @@ const getTextsFromLocalDB = async (userId: string): Promise<TextItem[]> => {
       const index = store.index('userId');
       const req = index.getAll(userId);
       req.onsuccess = () => {
-         const items = req.result.filter((i: any) => !i.deleted);
+         const items = req.result.filter((i: any) => !i.deleted && !i.id.startsWith('USER_LANG_'));
          resolve(items.sort((a, b) => b.timestamp - a.timestamp));
       };
       req.onerror = () => reject(req.error);
@@ -257,7 +258,7 @@ const getTextsFromLocalDB = async (userId: string): Promise<TextItem[]> => {
   return texts;
 };
 
-const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string, skipTexts: boolean = false): Promise<{ passwordMismatch?: boolean, attempts?: any[], chats?: any[] } | void> => {
+const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string, skipTexts: boolean = false): Promise<{ passwordMismatch?: boolean, attempts?: any[], chats?: any[], language?: string } | void> => {
   try {
     const data = await fetchAllGoogleSheetRows();
     const textsMap = new Map<string, TextItem>();
@@ -266,6 +267,7 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string, s
     
     let remotePasswordStr: string | null = null;
     let lockoutExpiry = 0;
+    let remoteLanguage: string | undefined = undefined;
     
     const attempts: any[] = [];
     const responses: any[] = [];
@@ -276,7 +278,9 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string, s
       const rowId = String(row[0]);
       const rowUser = String(row[1]);
       
-      if (rowId === userId && rowUser === "USER_AUTH") {
+      if (rowId === `USER_LANG_${userId}` && rowUser === userId) {
+          remoteLanguage = String(row[2]);
+      } else if (rowId === userId && rowUser === "USER_AUTH") {
         remotePasswordStr = String(row[2] ?? "").padStart(5, '0');
       } else if (rowId === `${userId}_LOCKOUT` && rowUser === "USER_AUTH_LOCKOUT") {
         lockoutExpiry = Math.max(lockoutExpiry, Number(row[2]));
@@ -320,7 +324,7 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string, s
     }
 
     if (currentPassword && remotePasswordStr && remotePasswordStr !== currentPassword && parseInt(remotePasswordStr, 10) !== parseInt(currentPassword, 10)) {
-      return { passwordMismatch: true };
+      return { passwordMismatch: true, language: remoteLanguage };
     }
 
     
@@ -338,7 +342,7 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string, s
     });
 
     if (skipTexts) {
-       return { attempts: mergedAttempts, chats };
+       return { attempts: mergedAttempts, chats, language: remoteLanguage };
     }
 
     if (remoteTexts.length > 0 || deletedIds.size > 0 || deleteAllMarkerTime > 0) {
@@ -418,7 +422,7 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string, s
       }
     }
     
-    return { attempts: mergedAttempts, chats };
+    return { attempts: mergedAttempts, chats, language: remoteLanguage };
   } catch (e: any) {
     if (e.message && e.message.includes("Failed to fetch")) {
        // Silently ignore intermittent network/rate-limit fetch errors
@@ -596,7 +600,7 @@ const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; e
 
     if (lockoutExpiry > Date.now()) {
       localStorage.setItem(`login_lockout_${id}`, lockoutExpiry.toString());
-      return { isValid: false, error: 'تم الحظر مؤقتا يرجى الانتظار' };
+      return { isValid: false, error: 'accountLocked' };
     }
 
     if (found) {
@@ -661,16 +665,16 @@ const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; e
     if (validPassword) {
       return { isValid: true };
     }
-    return { isValid: false, error: 'تعذر الاتصال بالخادم، يرجى المحاولة مرة أخرى' };
+    return { isValid: false, error: 'serverError' };
   }
   
   if (!userExists) {
-    return { isValid: false, error: 'لا يوجد المعرف' };
+    return { isValid: false, error: 'idNotFound' };
   } else if (!validPassword) {
-    return { isValid: false, error: 'كلمة المرور خطا' };
+    return { isValid: false, error: 'wrongPassword' };
   }
   
-  return { isValid: false, error: 'حدث خطأ غير معروف' };
+  return { isValid: false, error: 'unknownError' };
 };
 
 const updatePasswordInDB = async (id: string, newPass: string) => {
@@ -702,9 +706,11 @@ const updatePasswordInDB = async (id: string, newPass: string) => {
 };
 
 export default function App() {
+  const [language, setLanguage] = useState<Language>('en');
+  const [tempLanguage, setTempLanguage] = useState<Language>('en');
+  const [showLanguagePopup, setShowLanguagePopup] = useState(false);
   const [currentView, setCurrentView] = useState<'home' | 'signup' | 'login' | 'dashboard'>('home');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
-
 
   const [generatedId, setGeneratedId] = useState('');
   const [password, setPassword] = useState('');
@@ -720,7 +726,13 @@ export default function App() {
   const [currentUserId, setCurrentUserId] = useState('');
   const [currentPassword, setCurrentPassword] = useState('');
 
+  const displayLang: Language = currentUserId ? language : 'en';
+
   useEffect(() => {
+    const savedLang = localStorage.getItem('website_language');
+    if (savedLang === 'en' || savedLang === 'ar') {
+      setLanguage(savedLang);
+    }
     const savedSession = localStorage.getItem('userSession');
     if (savedSession) {
       try {
@@ -1251,7 +1263,7 @@ export default function App() {
     // @ts-ignore
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      alert('عذراً، متصفحك لا يدعم تحويل الصوت إلى نص.');
+      alert(t('speechNotSupported', displayLang));
       return;
     }
 
@@ -1316,7 +1328,7 @@ export default function App() {
     };
 
     recognition.onend = () => {
-      // إعادة تشغيل المايكروفون تلقائياً إذا لم يوقفه المستخدم يدوياً للحفاظ على الجودة وعدم القص
+      // Re-enable microphone automatically
       if (isRecordingRef.current && recognitionRef.current) {
          try {
            recognitionRef.current.start();
@@ -1589,6 +1601,10 @@ export default function App() {
             handleLogout();
             return;
           }
+          if (res && res.language && (res.language === 'en' || res.language === 'ar')) {
+              setLanguage(res.language);
+              localStorage.setItem('website_language', res.language);
+          }
           if (res && res.attempts) {
             setSecurityAttempts(prev => {
                const fetchedIds = new Set(res.attempts!.map((a: any) => a.attemptId));
@@ -1692,7 +1708,7 @@ export default function App() {
   };
 
   const handleImageFiles = (files: File[]) => {
-    // الحد الأقصى 3 صور فقط
+    // Max 3 images
     const targetFiles = files.slice(0, 3 - imagePreviews.length);
     if (targetFiles.length === 0) return;
 
@@ -1741,7 +1757,7 @@ export default function App() {
   };
 
   return (
-    <div className={`min-h-screen w-full bg-black relative flex flex-col items-center justify-center gap-4 text-white ${theme === 'light' ? 'light-mode' : ''}`} dir="rtl">
+    <div className={`min-h-screen w-full bg-black relative flex flex-col items-center justify-center gap-4 text-white ${theme === 'light' ? 'light-mode' : ''}`} >
       <header className="absolute top-0 left-0 right-0 h-[72px] flex items-center justify-between px-4 sm:px-6 w-full z-40 pointer-events-none" dir="ltr">
         <div className="flex items-center justify-start text-lg text-gray-500 font-sans pointer-events-none w-auto sm:w-[200px] flex-shrink-0">
           <span>Inter Storage</span>
@@ -1751,7 +1767,7 @@ export default function App() {
           <div className="flex-1 flex justify-center pointer-events-auto px-4 w-full sm:max-w-[600px]">
              <input 
                type="text" 
-               placeholder="البحث هنا..." 
+               placeholder={t('searchHere', displayLang)} 
                value={searchQuery}
                onChange={e => setSearchQuery(e.target.value)}
                className="bg-[#111] sm:bg-white/5 border border-white/15 rounded-2xl px-4 py-2 sm:py-2.5 text-white outline-none focus:border-white/30 transition-all w-full text-sm sm:text-base text-center placeholder-gray-500 focus:bg-[#222] sm:focus:bg-white/10 shadow-sm"
@@ -1792,7 +1808,7 @@ export default function App() {
                  });
               }}
               className="p-2 -mr-2 flex items-center justify-center transition-colors outline-none cursor-pointer text-gray-400 hover:text-white active:scale-95 bg-transparent border-none"
-              title="الحساب"
+              title={t('account', displayLang)}
             >
               <User size={28} strokeWidth={1.5} />
             </button>
@@ -1811,7 +1827,7 @@ export default function App() {
                 <button
                   onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
                   className="px-2 sm:px-[12px] h-[38px] sm:h-[42px] flex items-center justify-center transition-colors outline-none cursor-pointer text-gray-400 hover:text-white active:scale-95 pointer-events-auto bg-transparent border border-transparent mr-1"
-                  title={theme === 'dark' ? "وضع الفاتح" : "وضع الداكن"}
+                  title={theme === 'dark' ? t('lightMode', displayLang) : t('darkMode', displayLang)}
                 >
                   {theme === 'dark' ? <Sun size={20} strokeWidth={1.5} className="sm:w-6 sm:h-6" /> : <Moon size={20} strokeWidth={1.5} className="sm:w-6 sm:h-6" />}
                 </button>
@@ -1845,24 +1861,24 @@ export default function App() {
                   <button
                     onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
                     className="p-1 flex items-center justify-center transition-colors outline-none cursor-pointer text-gray-400 hover:text-white active:scale-95 bg-transparent border-none"
-                    title={theme === 'dark' ? "وضع الفاتح" : "وضع الداكن"}
+                    title={theme === 'dark' ? t('lightMode', displayLang) : t('darkMode', displayLang)}
                   >
                     {theme === 'dark' ? <Sun size={22} className="sm:w-7 sm:h-7" strokeWidth={1.5} /> : <Moon size={22} className="sm:w-7 sm:h-7" strokeWidth={1.5} />}
                   </button>
                   <div className="w-[1px] h-5 sm:h-6 bg-white/10 mx-0.5 sm:mx-1"></div>
                 </>
               )}
-              <span className="text-white/30 text-xs sm:text-base font-medium px-0.5 sm:px-1" title="إجمالي النصوص">
+              <span className="text-white/30 text-xs sm:text-base font-medium px-0.5 sm:px-1" title={t('totalTexts', displayLang)}>
                 {recentTextAdditionsCount}
               </span>
               <button 
                 onClick={() => { setShowAddTextPopup(true); setNewText(''); }}
                 className="p-1 flex items-center justify-center transition-colors outline-none cursor-pointer text-gray-400 hover:text-white active:scale-95 bg-transparent border-none"
-                title="إضافة نص"
+                title={t('addText', displayLang)}
               >
                 <Plus size={22} className="sm:w-7 sm:h-7" strokeWidth={1.5} />
               </button>
-              <span className="text-white/30 text-xs sm:text-base font-medium px-0.5 sm:px-1" title="إجمالي الصور">
+              <span className="text-white/30 text-xs sm:text-base font-medium px-0.5 sm:px-1" title={t('totalImages', displayLang)}>
                 {recentImageAdditionsCount}
               </span>
               <button 
@@ -1873,7 +1889,7 @@ export default function App() {
                 }}
                 disabled={imageCooldownRemaining > 0}
                 className={`p-1 flex items-center justify-center transition-colors outline-none bg-transparent border-none ${imageCooldownRemaining > 0 ? 'text-gray-600 cursor-not-allowed' : 'text-gray-400 hover:text-white active:scale-95 cursor-pointer'}`}
-                title={imageCooldownRemaining > 0 ? `انتظر ${imageCooldownRemaining} ثواني` : "إضافة صورة"}
+                title={imageCooldownRemaining > 0 ? t('waitXSecondsImage', displayLang, imageCooldownRemaining) : t('addImagesTitle', displayLang)}
               >
                 {imageCooldownRemaining > 0 ? (
                   <span className="text-xs sm:text-sm font-medium w-5 h-5 sm:w-[26px] sm:h-[26px] flex items-center justify-center bg-white/10 rounded-full">{imageCooldownRemaining}</span>
@@ -1893,7 +1909,7 @@ export default function App() {
                    });
                 }}
                 className={`p-1 flex items-center justify-center transition-colors outline-none cursor-pointer relative bg-transparent border-none ${isBellShaking ? 'animate-shake' : ''} ${hasUnreadNotifs ? 'text-green-500 active:scale-95' : 'text-gray-400 hover:text-white active:scale-95'}`}
-                title="الإشعارات"
+                title={t('notifications', displayLang)}
               >
                 <Bell size={22} className="sm:w-7 sm:h-7" strokeWidth={1.5} />
                 {activeSecurityAttempts.length > 0 && (
@@ -1908,19 +1924,19 @@ export default function App() {
       {currentView === 'home' && (
         <>
           <button onClick={() => { setLoginId(''); setLoginPassword(''); setCurrentView('login'); }} className="cursor-pointer w-56 bg-transparent hover:bg-white/10 text-white font-medium py-2 px-8 rounded-full border border-gray-500 hover:border-white transition-all hover:scale-105 active:scale-95 text-lg tracking-wide">
-            تسجيل دخول
+            {t('homeFirstButton', displayLang)}
           </button>
           <button onClick={handleGoToSignup} className="cursor-pointer w-56 bg-white hover:bg-gray-100 text-black font-medium py-2 px-8 rounded-full shadow-[0_0_15px_rgba(255,255,255,0.2)] transition-all hover:scale-105 active:scale-95 text-lg tracking-wide">
-            انشاء حساب
+            {t('homeSecondButton', displayLang)}
           </button>
         </>
       )}
 
       {currentView === 'signup' && (
         <div className="flex flex-col items-center gap-8 w-full max-w-sm px-6 pt-24">
-          <div className="absolute top-[80px] text-xl font-light tracking-wide text-white text-center">انشاء حساب</div>
+          <div className="absolute top-[80px] text-xl font-light tracking-wide text-white text-center">{t('createAccount', displayLang)}</div>
           <div className="flex flex-col gap-3 w-full">
-            <label className="text-gray-400 text-sm">المعرف الخاص بك <span className="text-gray-500 text-xs">(تم إنشاؤه تلقائياً)</span></label>
+            <label className="text-gray-400 text-sm">{t('yourId', displayLang)} <span className="text-gray-500 text-xs">{t('autoGenerated', displayLang)}</span></label>
             <div className="flex items-center gap-2 w-full">
               <div className="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-center text-2xl font-mono tracking-[0.5em] text-white">
                 {generatedId}
@@ -1928,16 +1944,16 @@ export default function App() {
               <button 
                 onClick={(e) => handleCopyId(generatedId, e)}
                 className="shrink-0 p-3 bg-white/5 hover:bg-white/10 rounded-xl text-gray-400 hover:text-white transition-colors h-[56px] flex items-center justify-center cursor-pointer"
-                title="نسخ المعرف"
+                title={t('copyId', displayLang)}
               >
                 {copiedId === generatedId ? <Check size={20} className="text-green-500" /> : <Copy size={20} />}
               </button>
             </div>
-            <p className="text-xs text-gray-500">هذا المعرف سيكون مطلوباً لتسجيل الدخول لاحقاً.</p>
+            <p className="text-xs text-gray-500">{t('saveThisId', displayLang)}</p>
           </div>
 
           <div className="flex flex-col gap-3 w-full">
-            <label className="text-gray-400 text-sm">الرقم السري (5 أرقام)</label>
+            <label className="text-gray-400 text-sm">{t('password', displayLang)}</label>
             <div className="relative w-full">
               <input 
                 type="text" 
@@ -1983,19 +1999,21 @@ export default function App() {
                 setCurrentUserId(generatedId);
                 setCurrentPassword(password);
                 saveSession(generatedId, password);
+                setTempLanguage(language);
+                setShowLanguagePopup(true);
                 setCurrentView('dashboard');
               }}
               disabled={password.length !== 5}
               className={`w-full font-medium py-3 px-8 rounded-full shadow-[0_0_15px_rgba(255,255,255,0.2)] transition-all text-lg tracking-wide ${password.length === 5 ? 'bg-white hover:bg-gray-100 text-black cursor-pointer hover:scale-105 active:scale-95' : 'bg-white/50 text-gray-800 cursor-not-allowed'}`}
             >
-              انشاء الحساب
+              {t('createAccount', displayLang)}
             </button>
 
             <button 
               onClick={() => setCurrentView('home')} 
               className="cursor-pointer w-full text-gray-500 hover:text-white transition-colors py-2 text-sm font-light mt-2"
             >
-              العودة
+              {t('cancel', displayLang)}
             </button>
           </div>
         </div>
@@ -2003,10 +2021,10 @@ export default function App() {
 
       {currentView === 'login' && (
         <div className="flex flex-col items-center gap-8 w-full max-w-sm px-6 pt-24">
-          <div className="absolute top-[80px] text-xl font-light tracking-wide text-white text-center">تسجيل الدخول</div>
+          <div className="absolute top-[80px] text-xl font-light tracking-wide text-white text-center">{t('loginTitle', displayLang)}</div>
           
           <div className="flex flex-col gap-3 w-full">
-            <label className="text-gray-400 text-sm">المعرف الخاص بك</label>
+            <label className="text-gray-400 text-sm">{t('yourId', displayLang)}</label>
             <input 
               type="text" 
               inputMode="numeric"
@@ -2025,7 +2043,7 @@ export default function App() {
           </div>
 
           <div className="flex flex-col gap-3 w-full">
-            <label className="text-gray-400 text-sm">الرقم السري</label>
+            <label className="text-gray-400 text-sm">{t('password', displayLang)}</label>
             <div className="relative w-full">
               <input 
                 type="text" 
@@ -2066,8 +2084,8 @@ export default function App() {
             {loginPasswordError && <div className="text-red-500 text-sm text-center font-medium mt-1">{loginPasswordError}</div>}
             
             {forgotPasswordLockout > 0 ? (
-               <div className="w-full text-center text-red-500 font-medium text-sm mt-2" dir="rtl">
-                 لا يمكن تسجيل الدخول بدون كلمة المرور نظرا لعدم مطابقة اختياراتك للصور الامنة للحساب لمدة {Math.ceil(forgotPasswordLockout / 60)} دقيقة
+               <div className="w-full text-center text-red-500 font-medium text-sm mt-2" dir="ltr">
+                 {t('cantLoginFpLockout', displayLang, Math.ceil(forgotPasswordLockout / 60))}
                </div>
             ) : (loginId.length === 5 && loginHasFpEnabled === true) && (
                 <button
@@ -2144,24 +2162,24 @@ export default function App() {
                   }}
                   disabled={loginLockoutTimer > 0 || isLoggingIn}
                   className="w-full text-right pr-2 text-sm font-medium text-gray-400 hover:text-white transition-colors cursor-pointer mt-1"
-                  dir="rtl"
+                  dir="ltr"
                 >
-                  نسيت كلمة المرور؟
+                  {t('forgotPasswordQuestion', displayLang)}
                 </button>
             )}
             
           </div>
 
-          <div className="flex flex-col w-full gap-3 mt-4">
-            {localStorage.getItem(`device_banned_${loginId}`) === 'true' ? (
-              <div className="w-full text-center text-red-500 font-medium text-lg py-4 bg-red-500/10 rounded-xl border border-red-500/20" dir="rtl">
-                تم منع هذا الجهاز نهائيا
-              </div>
-            ) : loginLockoutTimer > 300 ? (
-              <div className="w-full text-center text-red-500 font-medium text-lg py-4 bg-red-500/10 rounded-xl border border-red-500/20" dir="rtl">
-                تم رفض الدخول من قبل صاحب الحساب
-              </div>
-            ) : (
+            <div className="flex flex-col w-full gap-3 mt-4">
+              {localStorage.getItem(`device_banned_${loginId}`) === 'true' ? (
+                <div className="w-full text-center text-red-500 font-medium text-lg py-4 bg-red-500/10 rounded-xl border border-red-500/20" dir="ltr">
+                  {t('deviceBanned', displayLang)}
+                </div>
+              ) : loginLockoutTimer > 300 ? (
+                <div className="w-full text-center text-red-500 font-medium text-lg py-4 bg-red-500/10 rounded-xl border border-red-500/20" dir="ltr">
+                  {t('accessDeniedOwner', displayLang)}
+                </div>
+              ) : (
               <button 
                 onClick={() => {
                   if (isLoggingIn || loginLockoutTimer > 0) return;
@@ -2178,7 +2196,7 @@ export default function App() {
                     if (result.isValid && !result.syncedTexts) {
                        const syncRes = await syncTextsFromRemoteDB(loginId, loginPassword);
                        if (syncRes && syncRes.passwordMismatch) {
-                         result = { isValid: false, error: 'كلمة المرور خطا' };
+                         result = { isValid: false, error: 'incorrectPassword' };
                          // Wipe the stale local db entry
                          initLocalDB().then(db => {
                             const tx = db.transaction('users', 'readwrite');
@@ -2197,9 +2215,9 @@ export default function App() {
                       saveSession(loginId, loginPassword);
                       setCurrentView('dashboard');
                     } else {
-                      if (result.error === 'لا يوجد المعرف') {
-                        setLoginIdError('عذرا هذا المعرف غير موجود');
-                      } else if (result.error === 'كلمة المرور خطا') {
+                      if (result.error === 'invalidId') {
+                        setLoginIdError(t('invalidId', displayLang));
+                      } else if (result.error === 'incorrectPassword') {
                         const attemptsStr = localStorage.getItem(`login_attempts_${loginId}`);
                         let attempts = attemptsStr ? parseInt(attemptsStr) : 0;
                         attempts += 1;
@@ -2208,7 +2226,7 @@ export default function App() {
                           localStorage.setItem(`login_lockout_${loginId}`, expiry.toString());
                           localStorage.setItem(`login_attempts_${loginId}`, "0");
                           setLoginLockoutTimer(300);
-                          setLoginPasswordError('تم الحظر مؤقتا يرجى الانتظار');
+                          setLoginPasswordError(t('temporarilyBlocked', displayLang));
                           
                           const attemptId = Date.now().toString() + Math.random().toString().slice(2, 8);
                           localStorage.setItem(`lockout_attemptid_${loginId}`, attemptId);
@@ -2224,7 +2242,7 @@ export default function App() {
                           
                           const attemptData = {
                                attemptId,
-                               device: navigator.platform || "جهاز غير معروف",
+                               device: navigator.platform || t('unknownDevice', displayLang),
                                time: Date.now(),
                                lockoutDuration: 300,
                                action: 'PENDING'
@@ -2242,9 +2260,9 @@ export default function App() {
                           
                         } else {
                           localStorage.setItem(`login_attempts_${loginId}`, attempts.toString());
-                          setLoginPasswordError(`عذرا كلمة المرور خاطئة (يتبقى ${5 - attempts} محاولات)`);
+                          setLoginPasswordError(t('wrongPasswordAttempts', displayLang, 5 - attempts));
                         }
-                      } else if (result.error === 'تم الحظر مؤقتا يرجى الانتظار') {
+                      } else if (result.error === 'temporarilyBlocked') {
                         setLoginPasswordError(result.error);
                         const lockoutStr = localStorage.getItem(`login_lockout_${loginId}`);
                         if (lockoutStr) {
@@ -2266,9 +2284,9 @@ export default function App() {
                     <div className="w-5 h-5 border-2 border-gray-500 border-t-white rounded-full animate-spin"></div>
                   </div>
                 ) : loginLockoutTimer > 0 ? (
-                  <span className="text-lg">انتظر {loginLockoutTimer} ثانية</span>
+                  <span className="text-lg">{t('waitXSeconds', displayLang, loginLockoutTimer)}</span>
                 ) : (
-                  <span className="text-lg">دخول</span>
+                  <span className="text-lg">{t('login', displayLang)}</span>
                 )}
               </button>
             )}
@@ -2277,7 +2295,7 @@ export default function App() {
               onClick={() => setCurrentView('home')} 
               className="cursor-pointer w-full text-gray-500 hover:text-white transition-colors py-2 text-sm font-light mt-2"
             >
-              العودة
+              {t('cancel', displayLang)}
             </button>
           </div>
         </div>
@@ -2290,7 +2308,7 @@ export default function App() {
             className="flex flex-col items-center justify-center gap-4 transition-all cursor-pointer group hover:scale-105 active:scale-95 outline-none bg-transparent border-none"
           >
             <Plus size={48} strokeWidth={1} className="text-gray-400 group-hover:text-white transition-colors" />
-            <span className="text-lg text-gray-400 group-hover:text-white transition-colors font-light tracking-wide">إضافة نص</span>
+            <span className="text-lg text-gray-400 group-hover:text-white transition-colors font-light tracking-wide">{t('addText', displayLang)}</span>
           </button>
           <button 
                 onClick={() => {
@@ -2307,7 +2325,7 @@ export default function App() {
                 <ImageIcon size={48} strokeWidth={1} className="text-gray-400 group-hover:text-white transition-colors" />
             )}
             <span className="text-lg text-gray-400 group-hover:text-white transition-colors font-light tracking-wide">
-              {imageCooldownRemaining > 0 ? `انتظر ${imageCooldownRemaining} ثواني` : 'إضافة صورة'}
+              {imageCooldownRemaining > 0 ? t('waitXSecondsImage', displayLang, imageCooldownRemaining) : t('addImage', displayLang)}
             </span>
           </button>
         </div>
@@ -2374,7 +2392,7 @@ export default function App() {
                             saveTextToDB(updatedItem, true).catch(e => console.error(e));
                           }}
                           className={`p-1.5 transition-all cursor-pointer outline-none bg-transparent border-none ${item.starred ? 'opacity-100 text-yellow-500 hover:text-yellow-400' : 'hover-actions-only text-gray-500 hover:text-white'}`}
-                          title={item.starred ? "إزالة التمييز" : "تثبيت كمفضلة"}
+                          title={item.starred ? t('removeStar', displayLang) : t('addStar', displayLang)}
                         >
                           <Star size={22} strokeWidth={item.starred ? 2 : 1.5} className={item.starred ? "fill-yellow-500" : ""} />
                         </button>
@@ -2388,7 +2406,7 @@ export default function App() {
                               setShowEditTextPopup(true);
                             }}
                             className="p-1.5 hover-actions-only transition-opacity bg-transparent text-gray-400 hover:text-white"
-                            title="تعديل النص"
+                            title={t('editTextT', displayLang)}
                           >
                             <Pencil size={18} strokeWidth={1.5} />
                           </button>
@@ -2405,14 +2423,14 @@ export default function App() {
                             setShareModalText(item.text);
                           }}
                           className="p-1.5 hover-actions-only transition-opacity bg-transparent text-gray-400 hover:text-white"
-                          title="مشاركة"
+                          title={t('share', displayLang)}
                         >
                           <Share2 size={18} strokeWidth={1.5} />
                         </button>
                         <button
                           onClick={(e) => handleCopy(item.text, item.id, e)}
                           className="p-1.5 hover-actions-only transition-opacity bg-transparent text-gray-400 hover:text-white"
-                          title="نسخ"
+                          title={t('copy', displayLang)}
                         >
                           {copiedId === item.id ? <Check size={18} strokeWidth={1.5} className="text-green-500" /> : <Copy size={18} strokeWidth={1.5} />}
                         </button>
@@ -2443,7 +2461,7 @@ export default function App() {
                               }}
                               className="text-gray-400 hover:text-white text-sm font-medium transition-colors cursor-pointer bg-transparent border-none outline-none"
                             >
-                              المزيد
+                              {t('showMore', displayLang)}
                             </button>
                           )}
                           {currentLimit > 50 && (
@@ -2461,7 +2479,7 @@ export default function App() {
                               }}
                               className="text-gray-400 hover:text-white text-sm font-medium transition-colors cursor-pointer bg-transparent border-none outline-none"
                             >
-                              عرض أقل
+                              {t('showLess', displayLang)}
                             </button>
                           )}
                         </div>
@@ -2482,7 +2500,7 @@ export default function App() {
                                 }}
                                 className="text-gray-400 hover:text-white text-sm font-medium transition-colors cursor-pointer bg-transparent border-none outline-none"
                               >
-                                عرض الكل
+                                {t('viewFullText', displayLang)}
                               </button>
                             )}
                             <button
@@ -2499,7 +2517,7 @@ export default function App() {
                               }}
                               className="text-gray-400 hover:text-white text-sm font-medium transition-colors cursor-pointer bg-transparent border-none outline-none"
                             >
-                              عرض أقل شيء
+                              {t('showLess', displayLang)}
                             </button>
                           </div>
                         )}
@@ -2530,7 +2548,7 @@ export default function App() {
             >
               <X size={20} />
             </button>
-            <div className="text-xl text-gray-300 font-light mt-2">المعرف الخاص بك</div>
+            <div className="text-xl text-gray-300 font-light mt-2">{t('yourId', displayLang)}</div>
             <div className="flex items-center gap-2 w-full">
               <div className="bg-black border border-white/5 rounded-2xl py-3 px-4 text-center text-3xl font-mono tracking-[0.5em] text-white w-full" dir="ltr">
                 {currentUserId}
@@ -2538,7 +2556,7 @@ export default function App() {
               <button 
                 onClick={(e) => handleCopyId(currentUserId, e)}
                 className="shrink-0 p-3 bg-black border border-white/5 hover:border-white/20 rounded-2xl text-gray-400 hover:text-white transition-colors h-[64px] flex items-center justify-center cursor-pointer"
-                title="نسخ المعرف"
+                title={t('copyId', displayLang)}
               >
                 {copiedId === currentUserId ? <Check size={20} className="text-green-500" /> : <Copy size={20} />}
               </button>
@@ -2546,7 +2564,7 @@ export default function App() {
 
             <div className="w-full flex flex-col gap-3">
               <div className="flex items-center justify-between w-full">
-                <div className="text-right text-gray-400 text-sm">كلمة المرور</div>
+                <div className="text-right text-gray-400 text-sm">{t('password', displayLang)}</div>
                 {!isEditingPassword ? (
                   <button 
                     onClick={() => {
@@ -2569,7 +2587,7 @@ export default function App() {
                     className="text-gray-400 hover:text-white transition-colors cursor-pointer text-sm font-medium"
                     dir="rtl"
                   >
-                    إلغاء
+                    {t('cancel', displayLang)}
                   </button>
                 )}
               </div>
@@ -2661,7 +2679,7 @@ export default function App() {
                   }}
                   className="text-right text-sm text-gray-400 hover:text-white transition-colors cursor-pointer"
                 >
-                  اظهار زر نسيت كلمة المرور عند تسجيل الدخول
+                  {t('showFpButtonOnLogin', displayLang)}
                 </button>
                 {fpSetupImages.length === 5 && (
                   <button
@@ -2673,7 +2691,7 @@ export default function App() {
                       setVerifyPasswordInput('');
                     }}
                     className={`w-5 h-5 rounded border flex items-center justify-center transition-colors cursor-pointer shrink-0 ${isForgotPasswordEnabled ? 'bg-green-500/20 border-green-500' : 'border-gray-500 hover:border-white'}`}
-                    title={isForgotPasswordEnabled ? "إلغاء الميزة" : "تفعيل الميزة"}
+                    title={isForgotPasswordEnabled ? t('disableFeature', displayLang) : t('enableFeature', displayLang)}
                   >
                     {isForgotPasswordEnabled && <Check size={14} strokeWidth={3} className="text-green-500" />}
                   </button>
@@ -2699,7 +2717,7 @@ export default function App() {
                     disabled={newPasswordValue.length !== 5}
                     className={`w-32 py-2 rounded-xl text-sm font-medium transition-colors ${newPasswordValue.length === 5 ? 'bg-white text-black hover:bg-gray-200 cursor-pointer' : 'bg-white/10 text-gray-500 cursor-not-allowed'}`}
                   >
-                    حفظ
+                    {t('save', displayLang)}
                   </button>
                 </div>
               )}
@@ -2707,10 +2725,10 @@ export default function App() {
               {showVerifyPassword && !showUserIdPassword && !isEditingPassword && (
                 <div className="flex flex-col gap-2 mt-2 animate-in fade-in duration-200">
                   <div className="text-right text-gray-400 text-xs">
-                    {verifyAction === 'edit' ? 'يرجى ادخال كلمة المرور الحالية للتعديل' 
-                    : verifyAction === 'setup_forgot_pwd' ? 'يرجى ادخال كلمة المرور لتفعيل اظهار زر نسيت كلمة المرور' 
-                    : verifyAction === 'toggle_forgot_pwd' ? (isForgotPasswordEnabled ? 'يرجى ادخال كلمة المرور لاخفاء زر نسيت كلمة المرور' : 'يرجى ادخال كلمة المرور لاظهار زر نسيت كلمة المرور') 
-                    : 'يرجى ادخال كلمة المرور لعرضها'}
+                    {verifyAction === 'edit' ? t('enterCurrentPasswordToEdit', displayLang) 
+                    : verifyAction === 'setup_forgot_pwd' ? t('enterPasswordToEnableFp', displayLang) 
+                    : verifyAction === 'toggle_forgot_pwd' ? (isForgotPasswordEnabled ? t('enterPasswordToDisableFp', displayLang) : t('enterPasswordToShowFp', displayLang)) 
+                    : t('enterPasswordToView', displayLang)}
                   </div>
                   <div className="flex gap-2">
                     <input 
@@ -2770,24 +2788,24 @@ export default function App() {
                             localStorage.setItem(`verify_lockout_${currentUserId}`, expiry.toString());
                             localStorage.setItem(`verify_attempts_${currentUserId}`, "0");
                             setVerifyLockoutTimer(300);
-                            setVerifyErrorMsg('تم الحظر مؤقتا يرجى الانتظار');
+                            setVerifyErrorMsg(t('temporarilyBlocked', displayLang));
                           } else {
                             localStorage.setItem(`verify_attempts_${currentUserId}`, attempts.toString());
-                            setVerifyErrorMsg(`كلمة المرور خاطئة (يتبقى ${5 - attempts} محاولات)`);
+                            setVerifyErrorMsg(t('wrongPasswordAttempts', displayLang, 5 - attempts));
                           }
                           setVerifyPasswordInput('');
                           setVerifyError(true);
                         }
                       }}
-                      disabled={verifyLockoutTimer > 0}
-                      className={`bg-transparent px-3 text-sm font-medium transition-colors outline-none ${verifyLockoutTimer > 0 ? 'text-gray-600 cursor-not-allowed' : 'text-gray-400 hover:text-white cursor-pointer'}`}
+                      disabled={verifyLockoutTimer > 0 || verifyPasswordInput.length !== 5}
+className={`bg-transparent px-3 text-sm font-medium transition-colors outline-none ${verifyLockoutTimer > 0 || verifyPasswordInput.length !== 5 ? 'text-gray-600 cursor-not-allowed' : 'text-gray-400 hover:text-white cursor-pointer'}`}
                     >
-                      {verifyLockoutTimer > 0 ? 'محظور' : 'تأكيد'}
+                      {verifyLockoutTimer > 0 ? t('blocked', displayLang) : t('confirmAction', displayLang)}
                     </button>
                   </div>
                   {(verifyError || verifyLockoutTimer > 0) && (
                     <div className="text-red-400 text-xs text-right animate-in fade-in zoom-in-95 duration-200">
-                      {verifyLockoutTimer > 0 ? `تم الحظر مؤقتا يرجى الانتظار ${verifyLockoutTimer} ثانية` : verifyErrorMsg || 'كلمة المرور خاطئة'}
+                      {verifyLockoutTimer > 0 ? t('blockedWait', displayLang, verifyLockoutTimer) : verifyErrorMsg || t('incorrectPassword', displayLang)}
                     </div>
                   )}
                 </div>
@@ -2796,11 +2814,17 @@ export default function App() {
 
             <div className="flex flex-col gap-3 mt-4 w-full">
               <button 
+                onClick={() => { setShowUserIdPopup(false); setTempLanguage(language); setShowLanguagePopup(true); }} 
+                className="w-full cursor-pointer bg-white/10 text-white hover:bg-white/20 font-medium py-3 rounded-xl transition-all active:scale-95 text-base border-none outline-none"
+              >
+                {t('websiteLanguage', displayLang)}
+              </button>
+              <button 
                 id="logout-btn"
                 onClick={() => setShowLogoutConfirm(true)} 
                 className="w-full cursor-pointer bg-transparent text-red-500 hover:text-red-400 font-medium py-2 transition-all hover:scale-105 active:scale-95 text-base border-none outline-none mt-2"
               >
-                تسجيل الخروج
+                {t('logoutDeviceBtn', displayLang)}
               </button>
             </div>
           </div>
@@ -2827,20 +2851,20 @@ export default function App() {
             >
               <X size={20} />
             </button>
-            <div className="text-xl text-gray-300 font-light mt-2 mb-4">تأكيد العملية</div>
+            <div className="text-xl text-gray-300 font-light mt-2 mb-4">{t('confirmAction', displayLang)}</div>
             
             <div className="flex flex-col gap-2 animate-in fade-in duration-200 w-full">
               <div className="text-right text-gray-400 text-xs">
-                {verifyAction === 'reject_device' ? 'يرجى ادخال كلمة المرور لرفض الدخول'
-                : verifyAction === 'accept_device' ? 'يرجى ادخال كلمة المرور لقبول الدخول'
-                : verifyAction === 'logout_device' ? 'يرجى ادخال كلمة المرور لتسجيل خروجه'
-                : verifyAction === 'ban_device' ? 'يرجى ادخال كلمة المرور لمنعه نهائيا'
-                : verifyAction === 'chat_device' ? 'يرجى ادخال كلمة المرور لارسال رسالة' : ''}
+                {verifyAction === 'reject_device' ? t('enterPasswordToReject', displayLang)
+                : verifyAction === 'accept_device' ? t('enterPasswordToAccept', displayLang)
+                : verifyAction === 'logout_device' ? t('enterPasswordToLogout', displayLang)
+                : verifyAction === 'ban_device' ? t('enterPasswordToBan', displayLang)
+                : verifyAction === 'chat_device' ? t('enterPasswordToChat', displayLang) : ''}
               </div>
               <div className="flex gap-2">
                 <input 
                   type="password"
-                  value={verifyPasswordInput}
+                      value={verifyPasswordInput}
                   disabled={verifyLockoutTimer > 0}
                   onChange={(e) => {
                     setVerifyPasswordInput(e.target.value.replace(/[^0-9]/g, ''));
@@ -2898,24 +2922,24 @@ export default function App() {
                         localStorage.setItem(`verify_lockout_${currentUserId}`, expiry.toString());
                         localStorage.setItem(`verify_attempts_${currentUserId}`, "0");
                         setVerifyLockoutTimer(300);
-                        setVerifyErrorMsg('تم الحظر مؤقتا يرجى الانتظار');
+                        setVerifyErrorMsg(t('temporarilyBlocked', displayLang));
                       } else {
                         localStorage.setItem(`verify_attempts_${currentUserId}`, attempts.toString());
-                        setVerifyErrorMsg(`كلمة المرور خاطئة (يتبقى ${5 - attempts} محاولات)`);
+                        setVerifyErrorMsg(t('wrongPasswordAttempts', displayLang, 5 - attempts));
                       }
                       setVerifyPasswordInput('');
                       setVerifyError(true);
                     }
                   }}
-                  disabled={verifyLockoutTimer > 0}
-                  className={`bg-transparent px-3 text-sm font-medium transition-colors outline-none ${verifyLockoutTimer > 0 ? 'text-gray-600 cursor-not-allowed' : 'text-gray-400 hover:text-white cursor-pointer'}`}
+                  disabled={verifyLockoutTimer > 0 || verifyPasswordInput.length !== 5}
+className={`bg-transparent px-3 text-sm font-medium transition-colors outline-none ${verifyLockoutTimer > 0 || verifyPasswordInput.length !== 5 ? 'text-gray-600 cursor-not-allowed' : 'text-gray-400 hover:text-white cursor-pointer'}`}
                 >
-                  {verifyLockoutTimer > 0 ? 'محظور' : 'تأكيد'}
+                  {verifyLockoutTimer > 0 ? t('blocked', displayLang) : t('confirmAction', displayLang)}
                 </button>
               </div>
               {(verifyError || verifyLockoutTimer > 0) && (
                 <div className="text-red-400 text-xs text-right animate-in fade-in zoom-in-95 duration-200">
-                  {verifyLockoutTimer > 0 ? `تم الحظر مؤقتا يرجى الانتظار ${verifyLockoutTimer} ثانية` : verifyErrorMsg || 'كلمة المرور خاطئة'}
+                  {verifyLockoutTimer > 0 ? t('blockedWait', displayLang, verifyLockoutTimer) : verifyErrorMsg || t('incorrectPassword', displayLang)}
                 </div>
               )}
             </div>
@@ -2935,13 +2959,13 @@ export default function App() {
              >
                   <X size={24} strokeWidth={1.5} />
              </button>
-             <div className="text-xl text-white font-medium mb-6 text-center pt-2">الاشعارات</div>
+             <div className="text-xl text-white font-medium mb-6 text-center pt-2">{t('notifications', displayLang)}</div>
              
              <div ref={notifScrollRef} className="overflow-y-auto custom-scrollbar flex-1 flex flex-col gap-4">
                {notificationsList.length === 0 ? (
                  <div className="flex flex-col items-center justify-center py-10 opacity-50">
                     <Bell size={48} strokeWidth={1} className="text-white mb-4" />
-                    <div className="text-xl text-white font-medium tracking-wide">لا توجد اشعارات</div>
+                    <div className="text-xl text-white font-medium tracking-wide">{t('noNotifications', displayLang)}</div>
                  </div>
                ) : (
                  notificationsList.map((attempt, idx) => {
@@ -2979,46 +3003,46 @@ export default function App() {
                                         setSecurityAttempts(prev => prev.filter(a => a.attemptId !== attempt.attemptId));
                                     }}
                                     className="text-gray-500 hover:text-red-500 transition-colors cursor-pointer outline-none border-none bg-transparent p-1"
-                                    title="حذف الاشعار"
+                                    title={t('deleteNotification', displayLang)}
                                  >
                                     <Trash2 size={20} />
                                  </button>
                               </div>
                            </div>
                            <div className="text-white text-right leading-relaxed" dir="rtl">
-                              يحاول جهاز {attempt.device} الدخول الى حسابك و تم وضع له المحاولة بعد {lockoutMinutes} دقائق
+                              {t('deviceTryLoginWait', displayLang, attempt.device, lockoutMinutes)}
                            </div>
                            <div className="flex flex-wrap gap-2 mt-3 justify-end" dir="rtl">
                                 {attempt.action === 'PENDING' || attempt.action === 'CHAT' || attempt.action === 'CLOSE_CHAT' ? (
                                   <>
-                                    <button onClick={() => { setVerifyAction('reject_device'); setActiveChatAttempt(attempt); setShowDeviceVerifyPopup(true); setShowNotificationsPopup(false); }} className="px-4 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">رفض الدخول</button>
-                                    <button onClick={() => { setVerifyAction('accept_device'); setActiveChatAttempt(attempt); setShowDeviceVerifyPopup(true); setShowNotificationsPopup(false); }} className="px-4 py-2 bg-green-500/20 text-green-400 hover:bg-green-500/30 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">قبول الدخول</button>
+                                    <button onClick={() => { setVerifyAction('reject_device'); setActiveChatAttempt(attempt); setShowDeviceVerifyPopup(true); setShowNotificationsPopup(false); }} className="px-4 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">{t('rejectAccess', displayLang)}</button>
+                                    <button onClick={() => { setVerifyAction('accept_device'); setActiveChatAttempt(attempt); setShowDeviceVerifyPopup(true); setShowNotificationsPopup(false); }} className="px-4 py-2 bg-green-500/20 text-green-400 hover:bg-green-500/30 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">{t('acceptAccess', displayLang)}</button>
                                     {attempt.action === 'CHAT' ? (
-                                      <button onClick={() => { setActiveChatAttempt(attempt); setShowOwnerChatPopup(true); setShowNotificationsPopup(false); }} className="px-5 py-2 bg-blue-500 text-white hover:bg-blue-600 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">فتح المحادثة</button>
+                                      <button onClick={() => { setActiveChatAttempt(attempt); setShowOwnerChatPopup(true); setShowNotificationsPopup(false); }} className="px-5 py-2 bg-blue-500 text-white hover:bg-blue-600 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">{t('openChat', displayLang)}</button>
                                     ) : (
-                                      <button onClick={() => { setVerifyAction('chat_device'); setActiveChatAttempt(attempt); setShowDeviceVerifyPopup(true); setShowNotificationsPopup(false); }} className="px-4 py-2 bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">ارسال له رسالة</button>
+                                      <button onClick={() => { setVerifyAction('chat_device'); setActiveChatAttempt(attempt); setShowDeviceVerifyPopup(true); setShowNotificationsPopup(false); }} className="px-4 py-2 bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">{t('sendMessage', displayLang)}</button>
                                     )}
                                   </>
                                 ) : attempt.action === 'REJECT' ? (
                                   <>
-                                    <div className="text-red-400 font-medium ml-auto my-auto px-2">تم رفض الدخول</div>
-                                    <button onClick={() => { setVerifyAction('accept_device'); setActiveChatAttempt(attempt); setShowDeviceVerifyPopup(true); setShowNotificationsPopup(false); }} className="px-4 py-2 bg-green-500/20 text-green-400 hover:bg-green-500/30 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">قبول الدخول</button>
+                                    <div className="text-red-400 font-medium ml-auto my-auto px-2">{t('accessRejected', displayLang)}</div>
+                                    <button onClick={() => { setVerifyAction('accept_device'); setActiveChatAttempt(attempt); setShowDeviceVerifyPopup(true); setShowNotificationsPopup(false); }} className="px-4 py-2 bg-green-500/20 text-green-400 hover:bg-green-500/30 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">{t('acceptAccess', displayLang)}</button>
                                   </>
                                 ) : attempt.action === 'ACCEPT' ? (
                                   <>
-                                    <div className="text-green-400 font-medium ml-auto my-auto px-2">تم قبول الدخول</div>
-                                    <button onClick={() => { setVerifyAction('logout_device'); setActiveChatAttempt(attempt); setShowDeviceVerifyPopup(true); setShowNotificationsPopup(false); }} className="px-4 py-2 bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">تسجيل خروج</button>
-                                    <button onClick={() => { setVerifyAction('ban_device'); setActiveChatAttempt(attempt); setShowDeviceVerifyPopup(true); setShowNotificationsPopup(false); }} className="px-4 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">عدم الدخول ابدا</button>
+                                    <div className="text-green-400 font-medium ml-auto my-auto px-2">{t('accessAccepted', displayLang)}</div>
+                                    <button onClick={() => { setVerifyAction('logout_device'); setActiveChatAttempt(attempt); setShowDeviceVerifyPopup(true); setShowNotificationsPopup(false); }} className="px-4 py-2 bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">{t('logoutDeviceBtn', displayLang)}</button>
+                                    <button onClick={() => { setVerifyAction('ban_device'); setActiveChatAttempt(attempt); setShowDeviceVerifyPopup(true); setShowNotificationsPopup(false); }} className="px-4 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">{t('banDeviceAlways', displayLang)}</button>
                                   </>
                                 ) : attempt.action === 'FORCE_LOGOUT' ? (
                                   <>
-                                    <div className="text-gray-400 font-medium ml-auto my-auto px-2">تم تسجيل الخروج</div>
-                                    <button onClick={() => { setVerifyAction('accept_device'); setActiveChatAttempt(attempt); setShowDeviceVerifyPopup(true); setShowNotificationsPopup(false); }} className="px-4 py-2 bg-green-500/20 text-green-400 hover:bg-green-500/30 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">قبول الدخول</button>
+                                    <div className="text-gray-400 font-medium ml-auto my-auto px-2">{t('loggedOut', displayLang)}</div>
+                                    <button onClick={() => { setVerifyAction('accept_device'); setActiveChatAttempt(attempt); setShowDeviceVerifyPopup(true); setShowNotificationsPopup(false); }} className="px-4 py-2 bg-green-500/20 text-green-400 hover:bg-green-500/30 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">{t('acceptAccess', displayLang)}</button>
                                   </>
                                 ) : attempt.action === 'BAN' ? (
                                   <>
-                                    <div className="text-red-500 font-medium ml-auto my-auto px-2">تم المنع النهائي</div>
-                                    <button onClick={() => { setVerifyAction('accept_device'); setActiveChatAttempt(attempt); setShowDeviceVerifyPopup(true); setShowNotificationsPopup(false); }} className="px-4 py-2 bg-green-500/20 text-green-400 hover:bg-green-500/30 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">قبول الدخول</button>
+                                    <div className="text-red-500 font-medium ml-auto my-auto px-2">{t('permanentlyBanned', displayLang)}</div>
+                                    <button onClick={() => { setVerifyAction('accept_device'); setActiveChatAttempt(attempt); setShowDeviceVerifyPopup(true); setShowNotificationsPopup(false); }} className="px-4 py-2 bg-green-500/20 text-green-400 hover:bg-green-500/30 rounded-xl text-sm font-medium transition-colors cursor-pointer border border-transparent">{t('acceptAccess', displayLang)}</button>
                                   </>
                                 ) : null}
                              </div>
@@ -3056,7 +3080,7 @@ export default function App() {
                         }}
                         className="text-red-500 hover:text-red-400 text-sm font-medium transition-colors bg-red-500/10 hover:bg-red-500/20 px-4 py-2 rounded-xl opacity-100 cursor-pointer w-auto"
                      >
-                         حذف الكل
+                         {t('deleteAll', displayLang)}
                      </button>
                  </div>
              )}
@@ -3070,9 +3094,9 @@ export default function App() {
              className="bg-[#111] border border-white/10 p-6 flex flex-col w-full max-w-lg shadow-[0_0_40px_rgba(0,0,0,0.8)] relative h-[80vh] rounded-3xl"
              onClick={(e) => e.stopPropagation()}
           >
-             <div className="text-xl text-white font-medium mb-4 text-center pt-2">محادثة مع المالك (الحساب مغلق)</div>
+             <div className="text-xl text-white font-medium mb-4 text-center pt-2">{t('chatWithOwnerClosed', displayLang)}</div>
              <div className="text-center text-red-400 text-sm mb-4">
-                انت محظور لمدة {Math.ceil((loginLockoutTimer > 0 ? loginLockoutTimer : forgotPasswordLockout) / 60)} دقائق
+                {t('youAreBlockedFor', displayLang, Math.ceil((loginLockoutTimer > 0 ? loginLockoutTimer : forgotPasswordLockout) / 60))}
              </div>
              
              <div className="flex-1 overflow-y-auto custom-scrollbar flex flex-col gap-3 pr-2 mb-4">
@@ -3117,7 +3141,7 @@ export default function App() {
                     }}
                     dir="rtl"
                     className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none focus:border-white/30"
-                    placeholder="اكتب رسالة..."
+                    placeholder={t('typeMessage', displayLang)}
                  />
                  <button 
                     onClick={() => {
@@ -3182,7 +3206,7 @@ export default function App() {
              >
                   <X size={24} strokeWidth={1.5} />
              </button>
-             <div className="text-xl text-white font-medium mb-4 text-center pt-2">محادثة مع {activeChatAttempt.device}</div>
+             <div className="text-xl text-white font-medium mb-4 text-center pt-2">{t('chatWith', displayLang, activeChatAttempt.device)}</div>
              
              <div className="flex-1 overflow-y-auto custom-scrollbar flex flex-col gap-3 pr-2 mb-4">
                  {chatsData.filter(c => c.attemptId === activeChatAttempt.attemptId).sort((a,b) => a.time - b.time).map((msg, idx) => {
@@ -3224,7 +3248,7 @@ export default function App() {
                     }}
                     dir="rtl"
                     className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none focus:border-white/30"
-                    placeholder="اكتب رسالة..."
+                    placeholder={t('typeMessage', displayLang)}
                  />
                  <button 
                     onClick={() => {
@@ -3258,12 +3282,12 @@ export default function App() {
              onClick={(e) => e.stopPropagation()}
           >
             <div className="flex justify-between items-center w-full pb-1" dir="rtl">
-              <div className="text-xl text-gray-300 font-medium">إضافة صور</div>
+              <div className="text-xl text-gray-300 font-medium">{t('addImagesTitle', displayLang)}</div>
               <button 
                 onClick={() => { setShowAddImagePopup(false); setImagePreviews([]); }}
                 className="text-gray-500 hover:text-white transition-colors cursor-pointer text-base bg-transparent border-none outline-none"
               >
-                إلغاء
+                {t('cancel', displayLang)}
               </button>
             </div>
             
@@ -3327,13 +3351,13 @@ export default function App() {
               {imagePreviews.length === 0 && (
                 <>
                   <UploadCloud size={40} strokeWidth={1} className="text-gray-400 mb-2" />
-                  <span className="text-gray-400 font-light">أرفق صوراً أو اسحبها هنا</span>
+                  <span className="text-gray-400 font-light">{t('attachOrDragImages', displayLang)}</span>
                 </>
               )}
             </div>
             
             <div className="flex justify-between items-center w-full mt-2" dir="rtl">
-              <div className="text-sm text-gray-500">تم اختيار {imagePreviews.length} صور</div>
+              <div className="text-sm text-gray-500">{t('imagesSelected', displayLang, imagePreviews.length)}</div>
               <button 
                 onClick={async () => {
                   if (imagePreviews.length === 0) return;
@@ -3342,7 +3366,7 @@ export default function App() {
                   const btn = document.getElementById('add-all-btn') as HTMLButtonElement;
                   if (btn) {
                     btn.disabled = true;
-                    btn.textContent = 'جاري الرفع...';
+                    btn.textContent = t('uploading', displayLang);
                   }
 
                   const newItems: TextItem[] = imagePreviews.map((preview, i) => ({
@@ -3375,7 +3399,7 @@ export default function App() {
                 disabled={imagePreviews.length === 0}
                 className={`px-8 py-2 rounded-full font-medium transition-all text-lg ${imagePreviews.length > 0 ? 'bg-white text-black hover:bg-gray-200 cursor-pointer hover:scale-105 active:scale-95 shadow-[0_0_15px_rgba(255,255,255,0.2)]' : 'bg-white/20 text-gray-500 cursor-not-allowed'}`}
               >
-                إضافة الكل
+                {t('addAll', displayLang)}
               </button>
             </div>
           </div>
@@ -3389,12 +3413,12 @@ export default function App() {
              onClick={(e) => e.stopPropagation()}
           >
             <div className="flex justify-between items-center w-full pb-1" dir="rtl">
-              <div className="text-xl text-gray-300 font-medium">إضافة نص جديد</div>
+              <div className="text-xl text-gray-300 font-medium">{t('addNewText', displayLang)}</div>
               <button 
                 onClick={() => { setShowAddTextPopup(false); stopRecordingUserAction(); }}
                 className="text-gray-500 hover:text-white transition-colors cursor-pointer text-base bg-transparent border-none outline-none"
               >
-                إلغاء
+                {t('cancel', displayLang)}
               </button>
             </div>
             <div className="w-full h-48 bg-white/5 border border-white/10 rounded-2xl flex flex-row focus-within:border-white/30 transition-colors" dir="rtl">
@@ -3404,7 +3428,7 @@ export default function App() {
                   setNewText(e.target.value);
                   recordingTextRef.current = e.target.value;
                 }}
-                placeholder="اكتب نصك"
+                placeholder={t('typeYourText', displayLang)}
                 className="flex-1 bg-transparent p-4 text-white placeholder:text-gray-600 focus:outline-none resize-none text-lg leading-relaxed custom-scrollbar h-full"
                 dir="rtl"
               />
@@ -3413,7 +3437,7 @@ export default function App() {
                   type="button"
                   className={`p-2 rounded-full transition-all duration-300 flex items-center justify-center ${isRecording ? 'bg-red-500/30 text-red-500 animate-pulse shadow-[0_0_20px_rgba(239,68,68,0.6)] scale-110' : 'bg-white/5 text-gray-400 hover:text-white hover:bg-white/10'}`}
                   onClick={() => toggleRecording(setNewText, newText)}
-                  title="تحدث"
+                  title={t('speak', displayLang)}
                 >
                   <Mic size={20} />
                 </button>
@@ -3447,7 +3471,7 @@ export default function App() {
                         const chunkItem: TextItem = {
                           id: i === 0 ? baseId : `${baseId}_p${i}`,
                           userId: currentUserId,
-                          text: chunkText + `\n\n(جزء ${i + 1} من ${numChunks})`,
+                          text: chunkText + '\n\n' + t('partOf', displayLang, i + 1, numChunks),
                           timestamp: Date.now() + i
                         };
                         newItems.push(chunkItem);
@@ -3465,7 +3489,7 @@ export default function App() {
                 disabled={!newText.trim()}
                 className={`w-32 py-2 rounded-full font-medium transition-all text-lg ${newText.trim() ? 'bg-white text-black hover:bg-gray-200 cursor-pointer hover:scale-105 active:scale-95 shadow-[0_0_15px_rgba(255,255,255,0.2)]' : 'bg-white/20 text-gray-500 cursor-not-allowed'}`}
               >
-                إضافة
+                {t('add', displayLang)}
               </button>
             </div>
           </div>
@@ -3479,23 +3503,23 @@ export default function App() {
              onClick={(e) => e.stopPropagation()}
           >
             <div className="text-xl text-gray-200 font-medium text-center">
-              تأكيد عملية الحذف
+              {t('confirmDelete', displayLang)}
             </div>
             <div className="text-gray-400 text-center text-sm leading-relaxed" dir="rtl">
-              هل أنت متأكد من حذف المحدد وهو {selectedTexts.size}؟ لا يمكن التراجع عن هذه العملية.
+              {t('areYouSureDeleteSelected', displayLang, selectedTexts.size)}
             </div>
             <div className="flex gap-4 w-full mt-2">
               <button 
                 onClick={() => setShowDeleteConfirm(false)}
                 className="flex-1 bg-white/5 hover:bg-white/10 text-white font-medium py-3 rounded-full transition-all active:scale-95 text-lg"
               >
-                إلغاء
+                {t('cancel', displayLang)}
               </button>
               <button 
                 onClick={deleteSelectedTexts}
                 className="flex-1 bg-red-500 hover:bg-red-600 text-white font-medium py-3 rounded-full transition-all shadow-[0_0_15px_rgba(239,68,68,0.3)] active:scale-95 text-lg"
               >
-                حذف
+                {t('deleteBtn', displayLang)}
               </button>
             </div>
           </div>
@@ -3515,7 +3539,7 @@ export default function App() {
              onClick={(e) => e.stopPropagation()}
           >
             <div className="flex justify-between items-center w-full pb-1" dir="rtl">
-              <div className="text-xl text-gray-300 font-medium">تعديل النص</div>
+              <div className="text-xl text-gray-300 font-medium">{t('editOriginalText', displayLang)}</div>
               <button 
                 onClick={() => {
                   setShowEditTextPopup(false);
@@ -3525,7 +3549,7 @@ export default function App() {
                 }}
                 className="text-gray-500 hover:text-white transition-colors cursor-pointer text-base bg-transparent border-none outline-none"
               >
-                إلغاء
+                {t('cancel', displayLang)}
               </button>
             </div>
             <div className="w-full h-48 bg-white/5 border border-white/10 rounded-2xl flex flex-row focus-within:border-white/30 transition-colors" dir="rtl">
@@ -3535,7 +3559,7 @@ export default function App() {
                   setEditTextInput(e.target.value);
                   recordingTextRef.current = e.target.value;
                 }}
-                placeholder="اكتب تعديلك هنا..."
+                placeholder={t('typeYourEditHere', displayLang)}
                 className="flex-1 bg-transparent p-4 text-white placeholder:text-gray-600 focus:outline-none resize-none text-lg leading-relaxed custom-scrollbar h-full"
                 dir="rtl"
               />
@@ -3544,7 +3568,7 @@ export default function App() {
                   type="button"
                   className={`p-2 rounded-full transition-all duration-300 flex items-center justify-center ${isRecording ? 'bg-red-500/30 text-red-500 animate-pulse shadow-[0_0_20px_rgba(239,68,68,0.6)] scale-110' : 'bg-white/5 text-gray-400 hover:text-white hover:bg-white/10'}`}
                   onClick={() => toggleRecording(setEditTextInput, editTextInput)}
-                  title="تحدث"
+                  title={t('speak', displayLang)}
                 >
                   <Mic size={20} />
                 </button>
@@ -3580,7 +3604,7 @@ export default function App() {
                         const chunkItem: TextItem = {
                           id: i === 0 ? baseId : `${baseId}_p${i}`,
                           userId: currentUserId,
-                          text: chunkText + `\n\n(جزء ${i + 1} من ${numChunks})`,
+                          text: chunkText + '\n\n' + t('partOf', displayLang, i + 1, numChunks),
                           timestamp: editTextItem.timestamp + i,
                           starred: editTextItem.starred
                         };
@@ -3599,7 +3623,7 @@ export default function App() {
                 disabled={!editTextInput.trim() || editTextInput.trim() === editTextItem.text}
                 className={`w-32 py-2 rounded-full font-medium transition-all text-lg ${editTextInput.trim() && editTextInput.trim() !== editTextItem.text ? 'bg-white text-black hover:bg-gray-200 cursor-pointer hover:scale-105 active:scale-95 shadow-[0_0_15px_rgba(255,255,255,0.2)]' : 'bg-white/20 text-gray-500 cursor-not-allowed'}`}
               >
-                تعديل
+                {t('editBtn', displayLang)}
               </button>
             </div>
           </div>
@@ -3619,20 +3643,20 @@ export default function App() {
                 >
                   <X size={24} />
                 </button>
-                <div className="text-lg md:text-xl text-white tracking-wide font-medium">تسجيل الدخول بدون كلمة مرور</div>
+                <div className="text-lg md:text-xl text-white tracking-wide font-medium">{t('loginWithoutPasswordTitle', displayLang)}</div>
                 <div className="w-8"></div>
              </div>
              
              <div className="p-6 flex flex-col gap-6 overflow-y-auto custom-scrollbar">
                 <div className="text-center text-gray-400 text-base font-medium mt-2">
-                   اختر الصور التي وضعتها كصور لامان لحسابك
+                   {t('chooseSecurityImages', displayLang)}
                 </div>
                 
                 <div className="relative min-h-[300px]">
                    {loadedImagesCount < (recoveryOptions?.length || 25) && (
                       <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-[#111] z-20">
                           <div className="w-10 h-10 border-4 border-white/20 border-t-white rounded-full animate-spin"></div>
-                          <div className="text-gray-400 text-sm font-medium" dir="rtl">جاري تحميل الصور... ({loadedImagesCount}/{recoveryOptions?.length || 25})</div>
+                          <div className="text-gray-400 text-sm font-medium" dir="ltr">{t('loadingImages', displayLang, loadedImagesCount, recoveryOptions?.length || 25)}</div>
                       </div>
                    )}
                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 p-2">
@@ -3654,7 +3678,7 @@ export default function App() {
                            >
                               <img 
                                 src={opt.url} 
-                                alt="خيارات الاسترداد" 
+                                alt={t('recoveryOptionsAlt', displayLang)} 
                                 className="w-full h-full object-contain" 
                                 onLoad={() => setLoadedImagesCount(c => c + 1)}
                                 onError={() => setLoadedImagesCount(c => c + 1)}
@@ -3727,7 +3751,7 @@ export default function App() {
                               
                               const attemptData = {
                                    attemptId,
-                                   device: navigator.platform || "جهاز غير معروف",
+                                   device: navigator.platform || t('unknownDevice', displayLang),
                                    time: Date.now(),
                                    action: 'PENDING',
                                    lockoutDuration: lockoutMinutes * 60
@@ -3747,7 +3771,7 @@ export default function App() {
                     disabled={recoverySelected.length !== 5}
                     className={`w-full py-4 rounded-xl text-lg font-medium transition-all min-h-[60px] ${recoverySelected.length === 5 ? 'bg-white text-black hover:bg-gray-200 cursor-pointer shadow-[0_0_15px_rgba(255,255,255,0.2)] hover:scale-105 active:scale-95' : 'bg-white/10 text-gray-500 cursor-not-allowed'}`}
                  >
-                    تسجيل دخول
+                    {t('loginBtn', displayLang)}
                  </button>
              </div>
           </div>
@@ -3758,11 +3782,11 @@ export default function App() {
           <div 
             className="bg-[#111] border border-white/10 rounded-[32px] flex flex-col w-full max-w-md shadow-[0_0_40px_rgba(0,0,0,0.8)] relative max-h-[85vh] overflow-hidden"
             onClick={(e) => e.stopPropagation()}
-            dir="rtl"
+            dir="ltr"
           >
             <div className="flex items-center justify-between p-6 border-b border-white/5 shrink-0">
               <div className="w-8"></div>
-              <div className="text-xl text-gray-200 font-medium tracking-wide">اظهار زر نسيت كلمة المرور</div>
+              <div className="text-xl text-gray-200 font-medium tracking-wide">{t('showFpButton', displayLang)}</div>
               <button 
                 onClick={() => { setShowForgotPasswordSetup(false); setShowUserIdPopup(true); }} 
                 className="p-1 text-gray-500 hover:text-white transition-colors cursor-pointer"
@@ -3773,7 +3797,7 @@ export default function App() {
             
             <div className="p-6 overflow-y-auto custom-scrollbar flex flex-col gap-6">
               <div className="text-sm text-gray-400 text-center">
-                يرجى إضافة 5 صور مختلفة وكتابة وصف بالإنجليزية لكل صورة لتفعيل اظهار زر نسيت كلمة المرور
+                {t('add5ImagesDocs', displayLang)}
               </div>
               
               <div className="flex flex-col gap-4">
@@ -3797,7 +3821,7 @@ export default function App() {
                         const val = e.target.value.replace(/[^a-zA-Z0-9.\- ]/g, '');
                         setFpSetupImages(prev => prev.map((item, i) => i === idx ? { ...item, keyword: val } : item));
                       }}
-                      placeholder="وصف الصورة بالانجليزي..."
+                      placeholder={t('imageDescEnglish', displayLang)}
                       className="w-full bg-white/5 border border-white/20 rounded-xl py-3 px-4 text-white text-sm focus:outline-none focus:border-white transition-colors"
                       dir="ltr"
                     />
@@ -3830,7 +3854,7 @@ export default function App() {
                   className={`flex items-center justify-center gap-2 px-6 py-3 rounded-xl ${fpSetupImages.length >= 5 ? 'bg-gray-800 text-gray-500 cursor-not-allowed' : 'bg-white/10 hover:bg-white/20 text-white cursor-pointer'} transition-colors w-full`}
                 >
                   <Plus size={20} />
-                  <span>إضافة صورة ({fpSetupImages.length}/5)</span>
+                  <span>{t('addImageCount', displayLang, fpSetupImages.length)}</span>
                 </label>
               </div>
               <div className="flex justify-center mt-2 pb-6">
@@ -3893,7 +3917,7 @@ export default function App() {
                  >
                    {fpSetupLoading ? (
                       <div className="w-4 h-4 border-2 border-gray-500 border-t-white rounded-full animate-spin"></div>
-                   ) : "حفظ"}
+                   ) : t('save', displayLang)}
                  </button>
               </div>
             </div>
@@ -3906,16 +3930,10 @@ export default function App() {
           <div 
              className="bg-[#111] border border-white/10 p-6 rounded-3xl flex flex-col gap-6 w-full max-w-sm shadow-[0_0_40px_rgba(0,0,0,0.8)] relative text-center"
              onClick={(e) => e.stopPropagation()}
-             dir="rtl"
+             dir="ltr"
           >
-            <div className="text-xl text-white font-medium">هل أنت متأكد أنك تريد تسجيل الخروج؟</div>
+            <div className="text-xl text-white font-medium">{t('logoutConfirmTitle', displayLang)}</div>
             <div className="flex gap-4 w-full">
-              <button 
-                onClick={() => setShowLogoutConfirm(false)} 
-                className="flex-1 cursor-pointer bg-white/10 hover:bg-white/20 text-white font-medium py-3 rounded-full transition-all hover:scale-105 active:scale-95 text-lg"
-              >
-                لا
-              </button>
               <button 
                 onClick={() => {
                   setShowLogoutConfirm(false);
@@ -3923,7 +3941,13 @@ export default function App() {
                 }} 
                 className="flex-1 cursor-pointer bg-red-500 hover:bg-red-600 text-white font-medium py-3 rounded-full transition-all hover:scale-105 active:scale-95 text-lg"
               >
-                نعم
+                {t('yes', displayLang)}
+              </button>
+              <button 
+                onClick={() => setShowLogoutConfirm(false)} 
+                className="flex-1 cursor-pointer bg-white/10 hover:bg-white/20 text-white font-medium py-3 rounded-full transition-all hover:scale-105 active:scale-95 text-lg"
+              >
+                {t('no', displayLang)}
               </button>
             </div>
           </div>
@@ -3945,7 +3969,7 @@ export default function App() {
              <div className="w-full max-h-[75vh] bg-[#111] border border-white/10 rounded-3xl overflow-hidden relative flex flex-col">
                  <div className="w-full overflow-y-auto custom-scrollbar p-6 md:p-10">
                      {viewedItem.text.startsWith('data:image/') ? (
-                         <img src={viewedItem.text} alt="عرض الصورة" className="w-full h-auto max-h-[70vh] object-contain rounded-xl" />
+                         <img src={viewedItem.text} alt={t('viewImageAlt', displayLang)} className="w-full h-auto max-h-[70vh] object-contain rounded-xl" />
                      ) : (
                          <div className="text-white whitespace-pre-wrap text-[18px] md:text-[22px] leading-relaxed w-full break-words text-right" dir="auto">
                              {viewedItem.text}
@@ -3960,7 +3984,7 @@ export default function App() {
                      className="text-gray-300 hover:text-white transition-colors flex items-center gap-2 cursor-pointer bg-transparent border-none outline-none"
                  >
                      {copiedId === viewedItem.id ? <Check size={20} className="text-green-500" /> : <Copy size={20} />}
-                     <span className="text-sm font-medium">نسخ</span>
+                     <span className="text-sm font-medium">{t('copy', displayLang)}</span>
                  </button>
                  <div className="w-[1px] h-5 bg-white/20"></div>
                  <button 
@@ -3975,7 +3999,7 @@ export default function App() {
                      className="text-gray-300 hover:text-white transition-colors flex items-center gap-2 cursor-pointer bg-transparent border-none outline-none"
                  >
                      <Share2 size={20} />
-                     <span className="text-sm font-medium">مشاركة</span>
+                     <span className="text-sm font-medium">{t('share', displayLang)}</span>
                  </button>
                  <div className="w-[1px] h-5 bg-white/20"></div>
                  <button 
@@ -3987,10 +4011,10 @@ export default function App() {
                          saveTextToDB(updatedItem, true).catch(console.error);
                      }} 
                      className={`transition-colors flex items-center gap-2 outline-none border-none bg-transparent cursor-pointer ${texts.find(t => t.id === viewedItem.id)?.starred || viewedItem.starred ? 'text-yellow-500 hover:text-yellow-400' : 'text-gray-300 hover:text-white'}`}
-                     title={(texts.find(t => t.id === viewedItem.id)?.starred || viewedItem.starred) ? "إزالة التمييز" : "تثبيت كمفضلة"}
+                     title={(texts.find(t => t.id === viewedItem.id)?.starred || viewedItem.starred) ? t('removeStar', displayLang) : t('addStar', displayLang)}
                  >
                      <Star size={20} className={(texts.find(t => t.id === viewedItem.id)?.starred || viewedItem.starred) ? "fill-yellow-500" : ""} />
-                     <span className="text-sm font-medium">تمييز</span>
+                     <span className="text-sm font-medium">{t('highlight', displayLang)}</span>
                  </button>
              </div>
           </div>
@@ -4005,7 +4029,7 @@ export default function App() {
             dir="rtl"
           >
             <div className="flex justify-between items-center w-full p-6 pb-4 border-b border-white/10">
-              <div className="text-xl text-white font-medium">مشاركة عبر</div>
+              <div className="text-xl text-white font-medium">{t('shareVia', displayLang)}</div>
               <button 
                 onClick={() => setShareModalText(null)}
                 className="text-gray-500 hover:text-white transition-colors cursor-pointer bg-transparent border-none outline-none"
@@ -4015,7 +4039,7 @@ export default function App() {
             </div>
             <div className="p-6 overflow-y-auto custom-scrollbar flex-1">
               <div className="text-sm text-green-400 mb-6 font-medium text-center bg-green-400/10 py-3 rounded-xl">
-                {shareModalText?.startsWith('data:image/') ? 'تم نسخ الصورة بنجاح!' : 'تم نسخ النص بنجاح!'}
+                {shareModalText?.startsWith('data:image/') ? t('imageCopied', displayLang) : t('textCopied', displayLang)}
               </div>
 
               {navigator.share && typeof navigator.share === 'function' && (
@@ -4029,7 +4053,7 @@ export default function App() {
                           if (navigator.canShare && navigator.canShare({ files: [file] })) {
                               await navigator.share({ files: [file] });
                           } else {
-                              alert('جهازك لا يدعم مشاركة الملفات مباشرة.');
+                              alert(t('deviceShareNotSupported', displayLang));
                           }
                       } else {
                           await navigator.share({
@@ -4043,7 +4067,7 @@ export default function App() {
                   className="w-full flex items-center justify-center gap-3 p-4 mb-6 rounded-xl bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/30 text-blue-400 transition-colors cursor-pointer"
                 >
                   <Share2 size={20} />
-                  <span className="font-medium">مشاركة عبر تطبيقات الجهاز</span>
+                  <span className="font-medium">{t('shareViaDeviceApps', displayLang)}</span>
                 </button>
               )}
 
@@ -4060,10 +4084,10 @@ export default function App() {
                     onClick={(e) => {
                       if (shareModalText?.startsWith('data:image/')) {
                           // Already copied when share modal opened!
-                          alert('تم نسخ الصورة بنجاح! يتم الآن فتح المنصة لتتمكن من لصقها.');
+                          alert(t('imageCopiedOpeningPlatform', displayLang));
                       } else {
                           navigator.clipboard.writeText(shareModalText || '');
-                          alert('تم نسخ النص بنجاح! يتم الآن فتح المنصة لتتمكن من لصقه.');
+                          alert(t('textCopiedOpeningPlatform', displayLang));
                       }
                       setTimeout(() => setShareModalText(null), 100);
                     }}
@@ -4080,6 +4104,60 @@ export default function App() {
                 )})}
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showLanguagePopup && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm px-4" onClick={() => setShowLanguagePopup(false)}>
+          <div 
+             className="bg-[#111] border border-white/10 p-6 sm:p-8 flex flex-col items-center w-full max-w-sm sm:max-w-md shadow-[0_0_40px_rgba(0,0,0,0.8)] relative rounded-3xl"
+             onClick={(e) => e.stopPropagation()}
+             dir="ltr"
+          >
+             <button 
+               onClick={() => setShowLanguagePopup(false)} 
+               className="absolute top-4 left-4 p-2 text-gray-500 hover:text-white transition-colors cursor-pointer bg-transparent border-none"
+             >
+               <X size={24} />
+             </button>
+             <div className="w-16 h-1 bg-white/20 rounded-full mb-6 mx-auto"></div>
+             <div className="text-xl sm:text-2xl text-white font-medium mb-8 text-center pt-2 tracking-wide font-sans">{t('websiteLanguage', displayLang)}</div>
+             
+             <div className="flex flex-col w-full gap-4">
+                 <button onClick={() => {
+                   setTempLanguage('en');
+                  }} className="w-full py-4 bg-white/5 border border-white/10 hover:bg-white/10 rounded-2xl transition-all font-medium text-lg min-h-[60px] active:scale-95 cursor-pointer font-sans tracking-wider flex items-center justify-center relative text-white">
+                    {tempLanguage === 'en' && <Check size={22} className="absolute left-6 text-green-400" strokeWidth={2} />}
+                    {t('english', displayLang)}
+                 </button>
+                 <button onClick={() => {
+                   setTempLanguage('ar');
+                 }} className="w-full py-4 bg-white/5 border border-white/10 hover:bg-white/10 rounded-2xl transition-all font-medium text-lg min-h-[60px] active:scale-95 cursor-pointer font-sans tracking-wider flex items-center justify-center relative text-white">
+                    {tempLanguage === 'ar' && <Check size={22} className="absolute left-6 text-green-400" strokeWidth={2} />}
+                    {t('arabic', displayLang)}
+                 </button>
+
+                 {tempLanguage !== language && (
+                    <button onClick={() => {
+                        setLanguage(tempLanguage);
+                        setShowLanguagePopup(false);
+                        if (currentUserId) {
+                             localStorage.setItem('website_language', tempLanguage);
+                             appendToGoogleSheet({
+                                action: "ADD",
+                                id: `USER_LANG_${currentUserId}`,
+                                userid: currentUserId,
+                                text: tempLanguage,
+                                timestamp: Date.now(),
+                                starred: 0
+                             }).catch(e => console.error(e));
+                        }
+                    }} className="w-full mt-2 py-4 bg-white/5 border border-white/10 hover:bg-white/10 rounded-2xl transition-all font-medium min-h-[60px] active:scale-95 cursor-pointer flex items-center justify-center text-white">
+                        <Check size={28} strokeWidth={2.5} className="text-green-500" />
+                    </button>
+                 )}
+             </div>
           </div>
         </div>
       )}
