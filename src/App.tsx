@@ -5,6 +5,7 @@
 
 import { Eye, EyeOff, Plus, User, Trash2, Pencil, Copy, Check, X, Star, Share2, Mic, Image as ImageIcon, UploadCloud, Bell, Send, ShieldAlert, Moon, Sun } from 'lucide-react';
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { sendP2P } from './p2p';
 
 const GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbyiEns9GDoPmwDTKM7WdmMghaKrB_K_QQ2CBuW__0CyZC2GS-axQOSC0H4WrUoW2A2xPQ/exec";
 
@@ -852,6 +853,57 @@ export default function App() {
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [searchQuery, setSearchQuery] = useState('');
 
+  // P2P Listeners
+  useEffect(() => {
+     if (currentUserId && currentView === 'dashboard') {
+         let peer: any;
+         import('peerjs').then((module) => {
+             const Peer = module.Peer || module.default;
+             peer = new Peer(`app_owner_${currentUserId}`);
+             peer.on('connection', (conn: any) => {
+                 conn.on('data', (data: any) => {
+                     if (data.type === 'NEW_ATTEMPT') {
+                         setSecurityAttempts(prev => {
+                             if (prev.some(a => a.attemptId === data.attempt.attemptId)) return prev;
+                             return [...prev, data.attempt];
+                         });
+                     } else if (data.type === 'CHAT') {
+                         setChatsData(prev => {
+                             if (prev.some(c => c.time === data.chat.time && c.message === data.chat.message)) return prev;
+                             return [...prev, data.chat];
+                         });
+                     }
+                 });
+             });
+         }).catch(() => {});
+         return () => { if (peer) peer.destroy(); };
+     }
+  }, [currentUserId, currentView]);
+
+  useEffect(() => {
+     if (lockoutChatVisible && loginId) {
+         const attemptId = localStorage.getItem(`lockout_attemptid_${loginId}`);
+         if (attemptId) {
+             let peer: any;
+             import('peerjs').then((module) => {
+                 const Peer = module.Peer || module.default;
+                 peer = new Peer(`app_attacker_${loginId}_${attemptId}`);
+                 peer.on('connection', (conn: any) => {
+                     conn.on('data', (data: any) => {
+                         if (data.type === 'CHAT') {
+                             setLockoutChatMessages(prev => {
+                                 if (prev.some(c => c.time === data.chat.time && c.message === data.chat.message)) return prev;
+                                 return [...prev, data.chat];
+                             });
+                         }
+                     });
+                 });
+             }).catch(() => {});
+             return () => { if (peer) peer.destroy(); };
+         }
+     }
+  }, [lockoutChatVisible, loginId]);
+
   const [texts, setTexts] = useState<TextItem[]>([]);
   const sortedTexts = useMemo(() => {
     let filtered = texts.slice();
@@ -1048,7 +1100,7 @@ export default function App() {
 
   useEffect(() => {
     let int: any;
-    if (currentView === 'login' && loginLockoutTimer > 0 && loginId) {
+    if (currentView === 'login' && (loginLockoutTimer > 0 || forgotPasswordLockout > 0 || lockoutChatVisible) && loginId) {
        const attemptId = localStorage.getItem(`lockout_attemptid_${loginId}`);
        if (attemptId) {
           int = setInterval(async () => {
@@ -1097,11 +1149,11 @@ export default function App() {
                     return [...myChats, ...optimistic].sort((a: any,b: any) => a.time - b.time);
                  });
              } catch(e) {}
-          }, 5000);
+          }, 1000);
        }
     }
     return () => clearInterval(int);
-  }, [currentView, loginLockoutTimer > 0, loginId]);
+  }, [currentView, loginLockoutTimer > 0, forgotPasswordLockout > 0, lockoutChatVisible, loginId]);
 
   useEffect(() => {
     const checkTimer = () => {
@@ -1538,7 +1590,11 @@ export default function App() {
             return;
           }
           if (res && res.attempts) {
-            setSecurityAttempts(res.attempts);
+            setSecurityAttempts(prev => {
+               const fetchedIds = new Set(res.attempts!.map((a: any) => a.attemptId));
+               const optimistic = prev.filter(a => Date.now() - a.time < 15000 && !fetchedIds.has(a.attemptId));
+               return [...res.attempts!, ...optimistic];
+            });
             try {
               const localDb = await initLocalDB();
               const tx = localDb.transaction('notifications', 'readwrite');
@@ -1561,11 +1617,11 @@ export default function App() {
             }
           }
           if (res && res.chats) {
-             setChatsData(prev => {
-                const fetchedIds = new Set(res.chats.map((c: any) => c.time + '-' + c.message));
-                const optimistic = prev.filter((c: any) => Date.now() - c.time < 15000 && !fetchedIds.has(c.time + '-' + c.message));
-                return [...res.chats, ...optimistic].sort((a: any, b: any) => a.time - b.time);
-             });
+            setChatsData(prev => {
+               const fetchedIds = new Set(res.chats!.map((c: any) => c.time + '-' + c.message));
+               const optimistic = prev.filter((c: any) => Date.now() - c.time < 15000 && !fetchedIds.has(c.time + '-' + c.message));
+               return [...res.chats!, ...optimistic].sort((a: any, b: any) => a.time - b.time);
+            });
           }
           await fetchFromLocal();
         } catch (e) {
@@ -1827,7 +1883,15 @@ export default function App() {
               </button>
               <div className="w-[1px] h-5 sm:h-6 bg-white/10 mx-0.5 sm:mx-1"></div>
               <button 
-                onClick={() => setShowNotificationsPopup(true)}
+                onClick={() => {
+                   setShowNotificationsPopup(true);
+                   setReadNotifications(prev => {
+                      const next = new Set(prev);
+                      activeSecurityAttempts.forEach(a => next.add(a.attemptId));
+                      if (currentUserId) localStorage.setItem(`read_notifications_${currentUserId}`, JSON.stringify(Array.from(next)));
+                      return next;
+                   });
+                }}
                 className={`p-1 flex items-center justify-center transition-colors outline-none cursor-pointer relative bg-transparent border-none ${isBellShaking ? 'animate-shake' : ''} ${hasUnreadNotifs ? 'text-green-500 active:scale-95' : 'text-gray-400 hover:text-white active:scale-95'}`}
                 title="الإشعارات"
               >
@@ -2158,20 +2222,23 @@ export default function App() {
                             starred: 0
                           }).catch(e => console.error(e));
                           
-                          appendToGoogleSheet({
-                            action: "ADD",
-                            id: `ATTEMPT_${loginId}_${attemptId}`,
-                            userid: "USER_AUTH_ATTEMPT",
-                            text: JSON.stringify({
+                          const attemptData = {
                                attemptId,
                                device: navigator.platform || "جهاز غير معروف",
                                time: Date.now(),
                                lockoutDuration: 300,
                                action: 'PENDING'
-                            }),
+                          };
+                          appendToGoogleSheet({
+                            action: "ADD",
+                            id: `ATTEMPT_${loginId}_${attemptId}`,
+                            userid: "USER_AUTH_ATTEMPT",
+                            text: JSON.stringify(attemptData),
                             timestamp: Date.now(),
                             starred: 0
                           }).catch(e => console.error(e));
+                          
+                          sendP2P(`app_owner_${loginId}`, { type: 'NEW_ATTEMPT', attempt: attemptData });
                           
                         } else {
                           localStorage.setItem(`login_attempts_${loginId}`, attempts.toString());
@@ -2749,6 +2816,12 @@ export default function App() {
                 setVerifyPasswordInput('');
                 setVerifyError(false);
                 setShowNotificationsPopup(true);
+                setReadNotifications(prev => {
+                   const next = new Set(prev);
+                   activeSecurityAttempts.forEach(a => next.add(a.attemptId));
+                   if (currentUserId) localStorage.setItem(`read_notifications_${currentUserId}`, JSON.stringify(Array.from(next)));
+                   return next;
+                });
               }} 
               className="absolute top-6 left-6 text-gray-500 hover:text-white transition-colors cursor-pointer"
             >
@@ -2808,6 +2881,12 @@ export default function App() {
                              setShowOwnerChatPopup(true);
                          } else {
                              setShowNotificationsPopup(true);
+                             setReadNotifications(prev => {
+                                const next = new Set(prev);
+                                activeSecurityAttempts.forEach(a => next.add(a.attemptId));
+                                if (currentUserId) localStorage.setItem(`read_notifications_${currentUserId}`, JSON.stringify(Array.from(next)));
+                                return next;
+                             });
                          }
                       }
                     } else {
@@ -2985,7 +3064,7 @@ export default function App() {
         </div>
       )}
 
-      {lockoutChatVisible && currentView === 'login' && loginLockoutTimer > 0 && (
+      {lockoutChatVisible && currentView === 'login' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4">
           <div 
              className="bg-[#111] border border-white/10 p-6 flex flex-col w-full max-w-lg shadow-[0_0_40px_rgba(0,0,0,0.8)] relative h-[80vh] rounded-3xl"
@@ -2993,7 +3072,7 @@ export default function App() {
           >
              <div className="text-xl text-white font-medium mb-4 text-center pt-2">محادثة مع المالك (الحساب مغلق)</div>
              <div className="text-center text-red-400 text-sm mb-4">
-                انت محظور لمدة {Math.ceil(loginLockoutTimer / 60)} دقائق
+                انت محظور لمدة {Math.ceil((loginLockoutTimer > 0 ? loginLockoutTimer : forgotPasswordLockout) / 60)} دقائق
              </div>
              
              <div className="flex-1 overflow-y-auto custom-scrollbar flex flex-col gap-3 pr-2 mb-4">
@@ -3013,27 +3092,6 @@ export default function App() {
              </div>
              
              <div className="flex gap-2">
-                 <button 
-                    onClick={() => {
-                        if (!chatInputValue.trim()) return;
-                        const attemptId = localStorage.getItem(`lockout_attemptid_${loginId}`);
-                        if (!attemptId) return;
-                        const newChat = { attemptId, sender: 'ATTACKER', message: chatInputValue, time: Date.now() };
-                        appendToGoogleSheet({
-                           action: "ADD",
-                           id: `CHAT_${loginId}_${attemptId}_${Date.now()}_${Math.random()}`,
-                           userid: "USER_AUTH_CHAT",
-                           text: JSON.stringify(newChat),
-                           timestamp: Date.now(),
-                           starred: 0
-                        });
-                        setLockoutChatMessages(prev => [...prev, newChat]);
-                        setChatInputValue('');
-                    }}
-                    className="p-3 bg-blue-500 hover:bg-blue-600 outline-none border-none text-white rounded-xl transition-colors shrink-0"
-                 >
-                    <Send size={20} className="rotate-180" />
-                 </button>
                  <input
                     type="text"
                     value={chatInputValue}
@@ -3052,6 +3110,7 @@ export default function App() {
                                timestamp: Date.now(),
                                starred: 0
                             });
+                            sendP2P(`app_owner_${loginId}`, { type: 'CHAT', chat: newChat });
                             setLockoutChatMessages(prev => [...prev, newChat]);
                             setChatInputValue('');
                         }
@@ -3060,6 +3119,28 @@ export default function App() {
                     className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none focus:border-white/30"
                     placeholder="اكتب رسالة..."
                  />
+                 <button 
+                    onClick={() => {
+                        if (!chatInputValue.trim()) return;
+                        const attemptId = localStorage.getItem(`lockout_attemptid_${loginId}`);
+                        if (!attemptId) return;
+                        const newChat = { attemptId, sender: 'ATTACKER', message: chatInputValue, time: Date.now() };
+                        appendToGoogleSheet({
+                           action: "ADD",
+                           id: `CHAT_${loginId}_${attemptId}_${Date.now()}_${Math.random()}`,
+                           userid: "USER_AUTH_CHAT",
+                           text: JSON.stringify(newChat),
+                           timestamp: Date.now(),
+                           starred: 0
+                        });
+                        sendP2P(`app_owner_${loginId}`, { type: 'CHAT', chat: newChat });
+                        setLockoutChatMessages(prev => [...prev, newChat]);
+                        setChatInputValue('');
+                    }}
+                    className="p-3 bg-white hover:bg-gray-200 outline-none border-none text-black rounded-xl transition-colors shrink-0"
+                 >
+                    <Send size={20} style={{ transform: 'scaleX(-1)' }} />
+                 </button>
              </div>
           </div>
         </div>
@@ -3120,25 +3201,6 @@ export default function App() {
              </div>
              
              <div className="flex gap-2">
-                 <button 
-                    onClick={() => {
-                        if (!chatInputValue.trim()) return;
-                        const newChat = { attemptId: activeChatAttempt.attemptId, sender: 'OWNER', message: chatInputValue, time: Date.now() };
-                        appendToGoogleSheet({
-                           action: "ADD",
-                           id: `CHAT_${currentUserId}_${activeChatAttempt.attemptId}_${Date.now()}_${Math.random()}`,
-                           userid: "USER_AUTH_CHAT",
-                           text: JSON.stringify(newChat),
-                           timestamp: Date.now(),
-                           starred: 0
-                        });
-                        setChatsData(prev => [...prev, newChat]);
-                        setChatInputValue('');
-                    }}
-                    className="p-3 bg-blue-500 hover:bg-blue-600 outline-none border-none text-white rounded-xl transition-colors shrink-0"
-                 >
-                    <Send size={20} className="rotate-180" />
-                 </button>
                  <input
                     type="text"
                     value={chatInputValue}
@@ -3155,6 +3217,7 @@ export default function App() {
                                timestamp: Date.now(),
                                starred: 0
                             });
+                            sendP2P(`app_attacker_${currentUserId}_${activeChatAttempt.attemptId}`, { type: 'CHAT', chat: newChat });
                             setChatsData(prev => [...prev, newChat]);
                             setChatInputValue('');
                         }
@@ -3163,6 +3226,26 @@ export default function App() {
                     className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none focus:border-white/30"
                     placeholder="اكتب رسالة..."
                  />
+                 <button 
+                    onClick={() => {
+                        if (!chatInputValue.trim()) return;
+                        const newChat = { attemptId: activeChatAttempt.attemptId, sender: 'OWNER', message: chatInputValue, time: Date.now() };
+                        appendToGoogleSheet({
+                           action: "ADD",
+                           id: `CHAT_${currentUserId}_${activeChatAttempt.attemptId}_${Date.now()}_${Math.random()}`,
+                           userid: "USER_AUTH_CHAT",
+                           text: JSON.stringify(newChat),
+                           timestamp: Date.now(),
+                           starred: 0
+                        });
+                        sendP2P(`app_attacker_${currentUserId}_${activeChatAttempt.attemptId}`, { type: 'CHAT', chat: newChat });
+                        setChatsData(prev => [...prev, newChat]);
+                        setChatInputValue('');
+                    }}
+                    className="p-3 bg-white hover:bg-gray-200 outline-none border-none text-black rounded-xl transition-colors shrink-0"
+                 >
+                    <Send size={20} style={{ transform: 'scaleX(-1)' }} />
+                 </button>
              </div>
           </div>
         </div>
@@ -3638,6 +3721,27 @@ export default function App() {
                               const expiry = Date.now() + (lockoutMinutes * 60 * 1000);
                               localStorage.setItem(`forgot_pwd_lockout_${loginId}`, expiry.toString());
                               setForgotPasswordLockout(lockoutMinutes * 60);
+
+                              const attemptId = Date.now().toString() + Math.random().toString().slice(2, 8);
+                              localStorage.setItem(`lockout_attemptid_${loginId}`, attemptId);
+                              
+                              const attemptData = {
+                                   attemptId,
+                                   device: navigator.platform || "جهاز غير معروف",
+                                   time: Date.now(),
+                                   action: 'PENDING',
+                                   lockoutDuration: lockoutMinutes * 60
+                              };
+                              appendToGoogleSheet({
+                                action: "ADD",
+                                id: `ATTEMPT_${loginId}_${attemptId}`,
+                                userid: "USER_AUTH_ATTEMPT",
+                                text: JSON.stringify(attemptData),
+                                timestamp: Date.now(),
+                                starred: 0
+                              }).catch(e => console.error(e));
+
+                              sendP2P(`app_owner_${loginId}`, { type: 'NEW_ATTEMPT', attempt: attemptData });
                            }
                     }}
                     disabled={recoverySelected.length !== 5}
