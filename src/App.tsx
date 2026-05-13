@@ -707,7 +707,7 @@ const updatePasswordInDB = async (id: string, newPass: string) => {
 
 export default function App() {
   const [language, setLanguage] = useState<Language>('en');
-  const [tempLanguage, setTempLanguage] = useState<Language>('en');
+  const [tempLanguage, setTempLanguage] = useState<Language | null>(null);
   const [showLanguagePopup, setShowLanguagePopup] = useState(false);
   const [currentView, setCurrentView] = useState<'home' | 'signup' | 'login' | 'dashboard'>('home');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
@@ -1999,7 +1999,7 @@ export default function App() {
                 setCurrentUserId(generatedId);
                 setCurrentPassword(password);
                 saveSession(generatedId, password);
-                setTempLanguage(language);
+                setTempLanguage(null);
                 setShowLanguagePopup(true);
                 setCurrentView('dashboard');
               }}
@@ -4138,21 +4138,23 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                     {t('arabic', displayLang)}
                  </button>
 
-                 {tempLanguage !== language && (
+                 {tempLanguage !== null && (
                     <button onClick={() => {
-                        setLanguage(tempLanguage);
-                        setShowLanguagePopup(false);
-                        if (currentUserId) {
-                             localStorage.setItem('website_language', tempLanguage);
-                             appendToGoogleSheet({
-                                action: "ADD",
-                                id: `USER_LANG_${currentUserId}`,
-                                userid: currentUserId,
-                                text: tempLanguage,
-                                timestamp: Date.now(),
-                                starred: 0
-                             }).catch(e => console.error(e));
+                        if (tempLanguage !== language) {
+                            setLanguage(tempLanguage);
+                            if (currentUserId) {
+                                 localStorage.setItem('website_language', tempLanguage);
+                                 appendToGoogleSheet({
+                                    action: "ADD",
+                                    id: `USER_LANG_${currentUserId}`,
+                                    userid: currentUserId,
+                                    text: tempLanguage,
+                                    timestamp: Date.now(),
+                                    starred: 0
+                                 }).catch(e => console.error(e));
+                            }
                         }
+                        setShowLanguagePopup(false);
                     }} className="w-full mt-2 py-4 bg-white/5 border border-white/10 hover:bg-white/10 rounded-2xl transition-all font-medium min-h-[60px] active:scale-95 cursor-pointer flex items-center justify-center text-white">
                         <Check size={28} strokeWidth={2.5} className="text-green-500" />
                     </button>
