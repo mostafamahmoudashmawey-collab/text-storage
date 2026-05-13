@@ -2196,7 +2196,7 @@ export default function App() {
                     if (result.isValid && !result.syncedTexts) {
                        const syncRes = await syncTextsFromRemoteDB(loginId, loginPassword);
                        if (syncRes && syncRes.passwordMismatch) {
-                         result = { isValid: false, error: 'incorrectPassword' };
+                         result = { isValid: false, error: 'wrongPassword' };
                          // Wipe the stale local db entry
                          initLocalDB().then(db => {
                             const tx = db.transaction('users', 'readwrite');
@@ -2215,9 +2215,9 @@ export default function App() {
                       saveSession(loginId, loginPassword);
                       setCurrentView('dashboard');
                     } else {
-                      if (result.error === 'invalidId') {
-                        setLoginIdError(t('invalidId', displayLang));
-                      } else if (result.error === 'incorrectPassword') {
+                      if (result.error === 'idNotFound') {
+                        setLoginIdError(t('idNotFound', displayLang));
+                      } else if (result.error === 'wrongPassword') {
                         const attemptsStr = localStorage.getItem(`login_attempts_${loginId}`);
                         let attempts = attemptsStr ? parseInt(attemptsStr) : 0;
                         attempts += 1;
@@ -2262,16 +2262,8 @@ export default function App() {
                           localStorage.setItem(`login_attempts_${loginId}`, attempts.toString());
                           setLoginPasswordError(t('wrongPasswordAttempts', displayLang, 5 - attempts));
                         }
-                      } else if (result.error === 'temporarilyBlocked') {
-                        setLoginPasswordError(result.error);
-                        const lockoutStr = localStorage.getItem(`login_lockout_${loginId}`);
-                        if (lockoutStr) {
-                          const t = parseInt(lockoutStr);
-                          const diff = Math.ceil((t - Date.now()) / 1000);
-                          if (diff > 0) setLoginLockoutTimer(diff);
-                        }
                       } else {
-                        alert(result.error);
+                        setLoginIdError(t(result.error || 'unknownError', displayLang) || t('unknownError', displayLang));
                       }
                     }
                   })();
