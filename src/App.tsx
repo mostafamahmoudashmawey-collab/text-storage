@@ -4164,19 +4164,17 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
 
                  {tempLanguage !== null && (
                     <button onClick={() => {
-                        if (tempLanguage !== language) {
-                            setLanguage(tempLanguage);
-                            if (currentUserId) {
-                                 localStorage.setItem('website_language', tempLanguage);
-                                 appendToGoogleSheet({
-                                    action: "ADD",
-                                    id: `USER_LANG_${currentUserId}`,
-                                    userid: currentUserId,
-                                    text: tempLanguage,
-                                    timestamp: Date.now(),
-                                    starred: 0
-                                 }).catch(e => console.error(e));
-                            }
+                        setLanguage(tempLanguage);
+                        if (currentUserId) {
+                             localStorage.setItem('website_language', tempLanguage);
+                             appendToGoogleSheet({
+                                action: "ADD",
+                                id: `USER_LANG_${currentUserId}`,
+                                userid: currentUserId,
+                                text: tempLanguage,
+                                timestamp: Date.now(),
+                                starred: 0
+                             }).catch(e => console.error(e));
                         }
                         setShowLanguagePopup(false);
                     }} className="w-full mt-2 py-4 bg-white/5 border border-white/10 hover:bg-white/10 rounded-2xl transition-all font-medium min-h-[60px] active:scale-95 cursor-pointer flex items-center justify-center text-white">
