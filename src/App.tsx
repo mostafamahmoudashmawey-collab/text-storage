@@ -4109,14 +4109,46 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
       )}
 
       {showLanguagePopup && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm px-4" onClick={() => setShowLanguagePopup(false)}>
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm px-4" onClick={() => {
+            if (tempLanguage === null) {
+                setLanguage('en');
+                if (currentUserId) {
+                    localStorage.setItem('website_language', 'en');
+                    appendToGoogleSheet({
+                        action: "ADD",
+                        id: `USER_LANG_${currentUserId}`,
+                        userid: currentUserId,
+                        text: 'en',
+                        timestamp: Date.now(),
+                        starred: 0
+                    }).catch(e => console.error(e));
+                }
+            }
+            setShowLanguagePopup(false);
+        }}>
           <div 
              className="bg-[#111] border border-white/10 p-6 sm:p-8 flex flex-col items-center w-full max-w-sm sm:max-w-md shadow-[0_0_40px_rgba(0,0,0,0.8)] relative rounded-3xl"
              onClick={(e) => e.stopPropagation()}
              dir="ltr"
           >
              <button 
-               onClick={() => setShowLanguagePopup(false)} 
+               onClick={() => {
+                   if (tempLanguage === null) {
+                       setLanguage('en');
+                       if (currentUserId) {
+                           localStorage.setItem('website_language', 'en');
+                           appendToGoogleSheet({
+                               action: "ADD",
+                               id: `USER_LANG_${currentUserId}`,
+                               userid: currentUserId,
+                               text: 'en',
+                               timestamp: Date.now(),
+                               starred: 0
+                           }).catch(e => console.error(e));
+                       }
+                   }
+                   setShowLanguagePopup(false);
+               }} 
                className="absolute top-4 left-4 p-2 text-gray-500 hover:text-white transition-colors cursor-pointer bg-transparent border-none"
              >
                <X size={24} />
