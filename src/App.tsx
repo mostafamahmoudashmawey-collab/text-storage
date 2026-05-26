@@ -38,12 +38,16 @@ const fetchAllGoogleSheetRows = async (retryCount = 0): Promise<any[][]> => {
 // Append a row to the Google Sheet with automatic retries for maximum reliability
 const appendToGoogleSheet = async (payload: any, retryCount = 0): Promise<any> => {
   try {
+    const bodyStr = JSON.stringify(payload);
+    // Browser restricts keepalive requests to small payloads (typically cumulative 64KB max)
+    const canKeepAlive = bodyStr.length < 8192;
+    
     await fetch(GOOGLE_SHEETS_URL, {
       method: "POST",
-      body: JSON.stringify(payload),
+      body: bodyStr,
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       mode: "no-cors",
-      keepalive: true
+      ...(canKeepAlive ? { keepalive: true } : {})
     });
     return {};
   } catch (error) {
@@ -57,9 +61,87 @@ const appendToGoogleSheet = async (payload: any, retryCount = 0): Promise<any> =
   }
 };
 
-// Keep original image quality
+// Keep original image quality, but safely compress to fit Sheets length constraints beautifully!
+const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> => {
+  return new Promise((resolve) => {
+    const handleLoadedImage = (img: HTMLImageElement) => {
+      let maxDim = 800;
+      let quality = 0.6;
+      
+      const attemptCompress = (): string => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+        
+        if (width > height) {
+          if (width > maxDim) {
+            height *= maxDim / width;
+            width = maxDim;
+          }
+        } else {
+          if (height > maxDim) {
+            width *= maxDim / height;
+            height = maxDim;
+          }
+        }
+        
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+        }
+        
+        // Try WebP first for ultra efficiency, fall back to JPEG if needed
+        let dataUrl = canvas.toDataURL('image/webp', quality);
+        if (dataUrl.length > 48000) {
+          dataUrl = canvas.toDataURL('image/jpeg', quality);
+        }
+        return dataUrl;
+      };
+      
+      let finalDataUrl = attemptCompress();
+      
+      // If still too large, reduce dimension and quality on the fly
+      while (finalDataUrl.length > 48000 && (maxDim > 100 || quality > 0.1)) {
+        if (maxDim > 300) {
+          maxDim -= 150;
+        } else {
+          quality = Math.max(0.1, quality - 0.15);
+          maxDim = Math.max(100, maxDim - 50);
+        }
+        finalDataUrl = attemptCompress();
+      }
+      
+      resolve(finalDataUrl);
+    };
+
+    if (typeof fileOrDataUrl === 'string') {
+      const img = new Image();
+      img.onload = () => handleLoadedImage(img);
+      img.onerror = () => {
+        // Fallback: If image loading fails, return a truncated fallback
+        resolve(fileOrDataUrl.slice(0, 48000));
+      };
+      img.src = fileOrDataUrl;
+    } else {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => handleLoadedImage(img);
+        img.onerror = () => {
+          resolve((e.target?.result as string || '').slice(0, 48000));
+        };
+        img.src = e.target?.result as string;
+      };
+      reader.onerror = () => resolve('');
+      reader.readAsDataURL(fileOrDataUrl);
+    }
+  });
+};
+
 const compressImage = (dataUrl: string): Promise<string> => {
-  return Promise.resolve(dataUrl);
+  return compressImageToSafeSize(dataUrl);
 };
 
 interface TextItem {
@@ -73,36 +155,7 @@ interface TextItem {
 }
 
 const resizeImageToWebP = (file: File): Promise<string> => {
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const MAX_SIZE = 800;
-        let width = img.width;
-        let height = img.height;
-        if (width > height) {
-          if (width > MAX_SIZE) {
-            height *= MAX_SIZE / width;
-            width = MAX_SIZE;
-          }
-        } else {
-          if (height > MAX_SIZE) {
-            width *= MAX_SIZE / height;
-            height = MAX_SIZE;
-          }
-        }
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) ctx.drawImage(img, 0, 0, width, height);
-        resolve(canvas.toDataURL('image/webp', 0.5));
-      };
-      img.src = e.target?.result as string;
-    };
-    reader.readAsDataURL(file);
-  });
+  return compressImageToSafeSize(file);
 };
 
 const shuffleArray = (array: any[]) => {
@@ -1721,7 +1774,9 @@ export default function App() {
 
       Promise.all(target.map(file => {
         return new Promise<string>((resolve) => {
-          if (!file.type.startsWith('image/')) {
+          const isImage = file.type.startsWith('image/') || 
+            /\.(jpg|jpeg|png|gif|webp|svg|heic|heif|tiff|bmp|jfif|ico)$/i.test(file.name);
+          if (!isImage) {
             resolve('');
             return;
           }
@@ -3296,7 +3351,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
               <input 
                 type="file" 
                 multiple
-                accept="image/*" 
+                accept="image/*, .heic, .heif, .webp, .svg, .bmp, .gif, .png, .jpg, .jpeg, .tiff, .ico" 
                 className={`absolute inset-0 w-full h-full opacity-0 cursor-pointer ${imagePreviews.length > 0 ? 'hidden' : ''}`}
                 onChange={(e) => {
                   if (e.target.files && e.target.files.length > 0) {
@@ -3327,7 +3382,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                     const input = document.createElement('input');
                     input.type = 'file';
                     input.multiple = true;
-                    input.accept = 'image/*';
+                    input.accept = 'image/*, .heic, .heif, .webp, .svg, .bmp, .gif, .png, .jpg, .jpeg, .tiff, .ico';
                     input.onchange = (e: any) => {
                       if (e.target.files && e.target.files.length > 0) {
                         handleImageFiles(Array.from(e.target.files));
@@ -3824,10 +3879,10 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
               <div className="flex justify-center">
                 <input 
                   type="file" 
-                  accept="image/*" 
+                  accept="image/*, .heic, .heif, .webp, .svg, .bmp, .gif, .png, .jpg, .jpeg, .tiff, .ico" 
                   multiple
                   className="hidden" 
-                  id="fp-upload" 
+                  id="fp-upload"  
                   onChange={async (e) => {
                     const files = Array.from(e.target.files || []) as File[];
                     if (!files.length) return;
