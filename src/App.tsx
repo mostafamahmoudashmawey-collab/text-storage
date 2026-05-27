@@ -769,6 +769,7 @@ export default function App() {
   const [showAndroidInstallModal, setShowAndroidInstallModal] = useState(false);
   const [isAndroidDevice, setIsAndroidDevice] = useState(false);
   const [isMobileDevice, setIsMobileDevice] = useState(false);
+  const [showManualInstructions, setShowManualInstructions] = useState(false);
 
   useEffect(() => {
     const ua = navigator.userAgent.toLowerCase();
@@ -812,6 +813,8 @@ export default function App() {
       console.log(`Install outcome: ${outcome}`);
       setDeferredPrompt(null);
       setShowAndroidInstallModal(false);
+    } else {
+      setShowManualInstructions(true);
     }
   };
 
@@ -4301,14 +4304,14 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
       )}
 
       {showAndroidInstallModal && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-md px-4" onClick={() => setShowAndroidInstallModal(false)}>
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-md px-4" onClick={() => { setShowAndroidInstallModal(false); setShowManualInstructions(false); }}>
           <div 
             className="bg-[#0c0c0c] border border-white/10 p-6 sm:p-8 flex flex-col items-center w-full max-w-sm sm:max-w-md shadow-[0_0_50px_rgba(0,0,0,0.9)] relative rounded-3xl"
             onClick={(e) => e.stopPropagation()}
             dir={displayLang === 'ar' ? 'rtl' : 'ltr'}
           >
             <button 
-              onClick={() => setShowAndroidInstallModal(false)}
+              onClick={() => { setShowAndroidInstallModal(false); setShowManualInstructions(false); }}
               className="absolute top-4 left-4 p-2 text-gray-500 hover:text-white transition-colors cursor-pointer bg-transparent border-none outline-none"
             >
               <X size={24} />
@@ -4323,25 +4326,70 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
             </div>
 
             <h3 className="text-xl sm:text-2xl font-bold text-white text-center mb-2 font-sans">
-              {displayLang === 'ar' ? 'تثبيت تطبيق أندرويد' : 'Install Android App'}
+              {displayLang === 'ar' ? 'تثبيت التطبيق على أندرويد' : 'Install App on Android'}
             </h3>
-            <p className="text-gray-400 text-sm text-center mb-6 max-w-[280px]">
+            <p className="text-gray-400 text-sm text-center mb-6 max-w-[320px]">
               {displayLang === 'ar' 
-                ? 'احصل على تجربة استخدام أسرع بمراحل وتصفح سلس ومستقل بكافة الميزات مباشرة على شاشتك!' 
-                : 'Get a much faster experience with smooth and standalone features directly on your screen!'}
+                ? 'يدعم التنزيل والتثبيت الفوري لجميع هواتف أندرويد (سامسونج، شاومي، أوبو، ريلمي، وغيرها) بكافة أنواع المتصفحات!' 
+                : 'Supports instant download & install for all Android devices (Samsung, Xiaomi, Oppo, Realme, Pixel, etc.) across all browsers!'}
             </p>
 
+            {/* Show manual installation instructions if deferredPrompt is not available, or if the user clicks details */}
+            {(!deferredPrompt || showManualInstructions) ? (
+              <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 mb-6 text-xs sm:text-sm text-gray-300 leading-relaxed" dir={displayLang === 'ar' ? 'rtl' : 'ltr'}>
+                <p className="font-bold text-green-400 mb-3 text-center text-sm">
+                  {displayLang === 'ar' ? '💡 طريقة التثبيت السريع على متصفحك الحاصل:' : '💡 Fast Manual Install Instructions:'}
+                </p>
+                <div className="flex flex-col gap-3">
+                  <div className="flex gap-2 items-start">
+                    <span className="font-bold text-green-400 min-w-[18px] text-center">1</span>
+                    <p>
+                      {displayLang === 'ar' 
+                        ? 'اضغط على زر القائمة بالمتصفح (علامة السيرش بالمنيو، أو النقاط الثلاثة ⋮ أعلى اليسار، أو زر القائمة ☰ بالأسفل).' 
+                        : 'Tap the browser menu/share button (three dots ⋮ at the top right, or ☰ at the bottom).'}
+                    </p>
+                  </div>
+                  <div className="flex gap-2 items-start">
+                    <span className="font-bold text-green-400 min-w-[18px] text-center">2</span>
+                    <p>
+                      {displayLang === 'ar' 
+                        ? 'اختر "تثبيت التطبيق" (Install App) أو "إضافة إلى الشاشة الرئيسية" (Add to Home screen).' 
+                        : 'Select "Install app" or "Add to Home screen" option.'}
+                    </p>
+                  </div>
+                  <div className="flex gap-2 items-start">
+                    <span className="font-bold text-green-400 min-w-[18px] text-center">3</span>
+                    <p>
+                      {displayLang === 'ar' 
+                        ? 'سيظهر التطبيق كأيقونة على شاشة جوالك مباشرة ليعمل كتطبيق سريع وخفيف بشكل كامل!' 
+                        : 'The app icon will instantly appear on your screen and act as a full standalone app!'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
             <div className="w-full flex flex-col gap-3">
-              <button 
-                onClick={handleInstallClick}
-                className="w-full py-4 bg-white text-black hover:bg-gray-200 active:scale-95 transition-all text-base sm:text-lg font-bold rounded-2xl flex items-center justify-center gap-2 cursor-pointer shadow-[0_0_20px_rgba(255,255,255,0.15)] outline-none border-none"
-              >
-                <Download size={20} strokeWidth={2.5} />
-                {displayLang === 'ar' ? 'تثبيت التطبيق الآن' : 'Install Application Now'}
-              </button>
+              {deferredPrompt ? (
+                <button 
+                  onClick={handleInstallClick}
+                  className="w-full py-4 bg-white text-black hover:bg-gray-200 active:scale-95 transition-all text-base sm:text-lg font-bold rounded-2xl flex items-center justify-center gap-2 cursor-pointer shadow-[0_0_20px_rgba(255,255,255,0.15)] outline-none border-none"
+                >
+                  <Download size={20} strokeWidth={2.5} />
+                  {displayLang === 'ar' ? 'تثبيت التطبيق الآن' : 'Install Application Now'}
+                </button>
+              ) : (
+                <button 
+                  onClick={() => { setShowAndroidInstallModal(false); setShowManualInstructions(false); }}
+                  className="w-full py-4 bg-white text-black hover:bg-gray-200 active:scale-95 transition-all text-base sm:text-lg font-bold rounded-2xl flex items-center justify-center gap-2 cursor-pointer shadow-[0_0_20px_rgba(255,255,255,0.15)] outline-none border-none"
+                >
+                  <Check size={20} strokeWidth={2.5} />
+                  {displayLang === 'ar' ? 'حسناً، فهمت الطريقة' : 'Got it, I understand'}
+                </button>
+              )}
 
               <button 
-                onClick={() => setShowAndroidInstallModal(false)}
+                onClick={() => { setShowAndroidInstallModal(false); setShowManualInstructions(false); }}
                 className="w-full py-3 bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white transition-all text-sm font-medium rounded-xl cursor-pointer text-center outline-none border-none"
               >
                 {displayLang === 'ar' ? 'تصفح مؤقتاً عبر الويب' : 'Continue on Web'}
