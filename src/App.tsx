@@ -770,6 +770,14 @@ export default function App() {
   const [isAndroidDevice, setIsAndroidDevice] = useState(false);
   const [isMobileDevice, setIsMobileDevice] = useState(false);
   const [showManualInstructions, setShowManualInstructions] = useState(false);
+  const [isAppInstalled, setIsAppInstalled] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const isStandalone = window.matchMedia('(display-mode: standalone)').matches || 
+                           (window.navigator as any).standalone;
+      return isStandalone || localStorage.getItem('app_installed') === 'true';
+    }
+    return false;
+  });
 
   useEffect(() => {
     const ua = navigator.userAgent.toLowerCase();
@@ -778,12 +786,20 @@ export default function App() {
     setIsAndroidDevice(isAndroid);
     setIsMobileDevice(isMobile);
 
+    const checkStandalone = window.matchMedia('(display-mode: standalone)').matches || 
+                           (window.navigator as any).standalone || 
+                           localStorage.getItem('app_installed') === 'true';
+
+    if (checkStandalone) {
+      setIsAppInstalled(true);
+    }
+
     const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
       setDeferredPrompt(e);
       
       const hasPrompted = sessionStorage.getItem('pwa_install_prompted');
-      if (!hasPrompted) {
+      if (!hasPrompted && !checkStandalone) {
         setTimeout(() => {
           setShowAndroidInstallModal(true);
           sessionStorage.setItem('pwa_install_prompted', 'true');
@@ -791,10 +807,18 @@ export default function App() {
       }
     };
 
+    const handleAppInstalled = () => {
+      setIsAppInstalled(true);
+      setShowAndroidInstallModal(false);
+      setDeferredPrompt(null);
+      localStorage.setItem('app_installed', 'true');
+    };
+
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('appinstalled', handleAppInstalled);
 
     const hasPrompted = sessionStorage.getItem('pwa_install_prompted');
-    if (isMobile && !hasPrompted) {
+    if (isMobile && !hasPrompted && !checkStandalone) {
       setTimeout(() => {
         setShowAndroidInstallModal(true);
         sessionStorage.setItem('pwa_install_prompted', 'true');
@@ -803,6 +827,7 @@ export default function App() {
 
     return () => {
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', handleAppInstalled);
     };
   }, []);
 
@@ -1984,7 +2009,7 @@ export default function App() {
               <User size={28} strokeWidth={1.5} />
             </button>
           )}
-          {currentView === 'home' && (
+          {currentView === 'home' && !isAppInstalled && (
             <button 
               onClick={() => setShowAndroidInstallModal(true)}
               className="px-3 py-1.5 sm:px-4 sm:py-2 flex items-center gap-2 rounded-full transition-all duration-300 outline-none cursor-pointer text-green-400 hover:text-green-300 bg-green-500/10 border border-green-500/20 hover:bg-green-500/25 active:scale-95 shadow-[0_0_15px_rgba(34,197,94,0.15)] pointer-events-auto"
