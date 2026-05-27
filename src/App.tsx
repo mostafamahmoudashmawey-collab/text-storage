@@ -4331,33 +4331,6 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                 : 'Get a much faster experience with smooth and standalone features directly on your screen!'}
             </p>
 
-            <div className="w-full bg-white/5 border border-white/5 rounded-2xl p-4 mb-6 leading-relaxed text-sm text-gray-300">
-              <div className="flex items-start gap-3 mb-3">
-                <span className="text-green-400 mt-0.5 font-bold">⚡</span>
-                <p>
-                  {displayLang === 'ar' 
-                    ? 'تشغيل سريع جداً بكامل الشاشة وبدون شريط المتصفح المعتاد' 
-                    : 'Lightning-fast fullscreen view without address bar distraction'}
-                </p>
-              </div>
-              <div className="flex items-start gap-3 mb-3">
-                <span className="text-green-400 mt-0.5 font-bold">🔒</span>
-                <p>
-                  {displayLang === 'ar' 
-                    ? 'تخزين وحفظ آمن ومستمر لتفضيلاتك وحافظة النصوص والصور' 
-                    : 'Secure local storage of safety codes, preferences, clipboard text and images'}
-                </p>
-              </div>
-              <div className="flex items-start gap-3">
-                <span className="text-green-400 mt-0.5 font-bold">📱</span>
-                <p>
-                  {displayLang === 'ar' 
-                    ? 'يعمل كتطبيق هاتف رسمي وبمساحة خفيفة متناهية الصغر' 
-                    : 'Works fully as a native light-weight App with instant startup'}
-                </p>
-              </div>
-            </div>
-
             <div className="w-full flex flex-col gap-3">
               <button 
                 onClick={handleInstallClick}
@@ -4374,22 +4347,6 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                 {displayLang === 'ar' ? 'تصفح مؤقتاً عبر الويب' : 'Continue on Web'}
               </button>
             </div>
-
-            {!deferredPrompt && (
-              <div className="mt-4 pt-4 border-t border-white/5 w-full text-center">
-                <p className="text-gray-500 text-xs leading-relaxed">
-                  {displayLang === 'ar' ? (
-                    <>
-                      إذا لم يبدأ التثبيت تلقائياً، يرجى الضغط على <span className="text-red-400 font-bold">●●●</span> في أعلى المتصفح، ثم حدد <span className="text-white font-semibold">"تثبيت التطبيق"</span> أو <span className="text-white font-semibold">"إضافة إلى الشاشة الرئيسية"</span>
-                    </>
-                  ) : (
-                    <>
-                      If install prompt doesn't show up, tap <span className="text-white font-bold text-base">⋮</span> or share button in browser menu and select <span className="text-white font-semibold">"Install app"</span> or <span className="text-white font-semibold">"Add to Home screen"</span>
-                    </>
-                  )}
-                </p>
-              </div>
-            )}
           </div>
         </div>
       )}
