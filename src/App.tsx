@@ -1990,7 +1990,7 @@ export default function App() {
               className="px-3 py-1.5 sm:px-4 sm:py-2 flex items-center gap-2 rounded-full transition-all duration-300 outline-none cursor-pointer text-green-400 hover:text-green-300 bg-green-500/10 border border-green-500/20 hover:bg-green-500/25 active:scale-95 shadow-[0_0_15px_rgba(34,197,94,0.15)] pointer-events-auto"
               title={displayLang === 'ar' ? "تحميل وتثبيت التطبيق كـ PWA" : "Download & Install App"}
             >
-              <Smartphone size={18} strokeWidth={2} className="animate-pulse" />
+              <Smartphone size={18} strokeWidth={2} />
               <span className="text-xs sm:text-sm font-bold font-sans">
                 {displayLang === 'ar' ? "تنزيل التطبيق" : "Download App"}
               </span>
@@ -4384,7 +4384,6 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
             </button>
 
             <div className="w-20 h-20 bg-green-500/10 border border-green-500/20 rounded-full flex items-center justify-center mb-6 relative">
-              <div className="absolute inset-0 rounded-full bg-green-500/5 animate-ping" />
               <Smartphone size={40} className="text-green-400" strokeWidth={1.5} />
               <div className="absolute bottom-1 right-1 bg-green-500 text-black rounded-full p-1 border-2 border-[#0c0c0c]">
                 <Download size={14} strokeWidth={2.5} />
