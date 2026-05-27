@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Eye, EyeOff, Plus, User, Trash2, Pencil, Copy, Check, X, Star, Share2, Mic, Image as ImageIcon, UploadCloud, Bell, Send, ShieldAlert, Moon, Sun } from 'lucide-react';
+import { Eye, EyeOff, Plus, User, Trash2, Pencil, Copy, Check, X, Star, Share2, Mic, Image as ImageIcon, UploadCloud, Bell, Send, ShieldAlert, Moon, Sun, Download, Smartphone } from 'lucide-react';
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { sendP2P } from './p2p';
 import { t, Language } from './i18n';
@@ -764,6 +764,56 @@ export default function App() {
   const [showLanguagePopup, setShowLanguagePopup] = useState(false);
   const [currentView, setCurrentView] = useState<'home' | 'signup' | 'login' | 'dashboard'>('home');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [showAndroidInstallModal, setShowAndroidInstallModal] = useState(false);
+  const [isAndroidDevice, setIsAndroidDevice] = useState(false);
+  const [isMobileDevice, setIsMobileDevice] = useState(false);
+
+  useEffect(() => {
+    const ua = navigator.userAgent.toLowerCase();
+    const isAndroid = /android/.test(ua);
+    const isMobile = /iphone|ipad|ipod|android|blackberry|iemobile|opera mini/.test(ua);
+    setIsAndroidDevice(isAndroid);
+    setIsMobileDevice(isMobile);
+
+    const handleBeforeInstallPrompt = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      
+      const hasPrompted = sessionStorage.getItem('pwa_install_prompted');
+      if (!hasPrompted) {
+        setTimeout(() => {
+          setShowAndroidInstallModal(true);
+          sessionStorage.setItem('pwa_install_prompted', 'true');
+        }, 1500);
+      }
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+    const hasPrompted = sessionStorage.getItem('pwa_install_prompted');
+    if (isMobile && !hasPrompted) {
+      setTimeout(() => {
+        setShowAndroidInstallModal(true);
+        sessionStorage.setItem('pwa_install_prompted', 'true');
+      }, 2500);
+    }
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
+  }, []);
+
+  const handleInstallClick = async () => {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      console.log(`Install outcome: ${outcome}`);
+      setDeferredPrompt(null);
+      setShowAndroidInstallModal(false);
+    }
+  };
 
   const [generatedId, setGeneratedId] = useState('');
   const [password, setPassword] = useState('');
@@ -1868,6 +1918,15 @@ export default function App() {
               <User size={28} strokeWidth={1.5} />
             </button>
           )}
+          {isMobileDevice && (
+            <button 
+              onClick={() => setShowAndroidInstallModal(true)}
+              className="p-2 mr-2 flex items-center justify-center transition-colors outline-none cursor-pointer text-green-400 hover:text-green-300 active:scale-95 bg-transparent border-none"
+              title={displayLang === 'ar' ? "تثبيت التطبيق" : "Install App"}
+            >
+              <Smartphone size={24} strokeWidth={1.5} className="animate-pulse" />
+            </button>
+          )}
         </div>
       </header>
 
@@ -2318,7 +2377,7 @@ export default function App() {
                           setLoginPasswordError(t('wrongPasswordAttempts', displayLang, 5 - attempts));
                         }
                       } else {
-                        setLoginIdError(t(result.error || 'unknownError', displayLang) || t('unknownError', displayLang));
+                        setLoginIdError(t((result.error as any) || 'unknownError', displayLang) || t('unknownError', displayLang));
                       }
                     }
                   })();
@@ -4237,6 +4296,100 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                     </button>
                  )}
              </div>
+          </div>
+        </div>
+      )}
+
+      {showAndroidInstallModal && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-md px-4" onClick={() => setShowAndroidInstallModal(false)}>
+          <div 
+            className="bg-[#0c0c0c] border border-white/10 p-6 sm:p-8 flex flex-col items-center w-full max-w-sm sm:max-w-md shadow-[0_0_50px_rgba(0,0,0,0.9)] relative rounded-3xl"
+            onClick={(e) => e.stopPropagation()}
+            dir={displayLang === 'ar' ? 'rtl' : 'ltr'}
+          >
+            <button 
+              onClick={() => setShowAndroidInstallModal(false)}
+              className="absolute top-4 left-4 p-2 text-gray-500 hover:text-white transition-colors cursor-pointer bg-transparent border-none outline-none"
+            >
+              <X size={24} />
+            </button>
+
+            <div className="w-20 h-20 bg-green-500/10 border border-green-500/20 rounded-full flex items-center justify-center mb-6 relative">
+              <div className="absolute inset-0 rounded-full bg-green-500/5 animate-ping" />
+              <Smartphone size={40} className="text-green-400" strokeWidth={1.5} />
+              <div className="absolute bottom-1 right-1 bg-green-500 text-black rounded-full p-1 border-2 border-[#0c0c0c]">
+                <Download size={14} strokeWidth={2.5} />
+              </div>
+            </div>
+
+            <h3 className="text-xl sm:text-2xl font-bold text-white text-center mb-2 font-sans">
+              {displayLang === 'ar' ? 'تثبيت تطبيق أندرويد' : 'Install Android App'}
+            </h3>
+            <p className="text-gray-400 text-sm text-center mb-6 max-w-[280px]">
+              {displayLang === 'ar' 
+                ? 'احصل على تجربة استخدام أسرع بمراحل وتصفح سلس ومستقل بكافة الميزات مباشرة على شاشتك!' 
+                : 'Get a much faster experience with smooth and standalone features directly on your screen!'}
+            </p>
+
+            <div className="w-full bg-white/5 border border-white/5 rounded-2xl p-4 mb-6 leading-relaxed text-sm text-gray-300">
+              <div className="flex items-start gap-3 mb-3">
+                <span className="text-green-400 mt-0.5 font-bold">⚡</span>
+                <p>
+                  {displayLang === 'ar' 
+                    ? 'تشغيل سريع جداً بكامل الشاشة وبدون شريط المتصفح المعتاد' 
+                    : 'Lightning-fast fullscreen view without address bar distraction'}
+                </p>
+              </div>
+              <div className="flex items-start gap-3 mb-3">
+                <span className="text-green-400 mt-0.5 font-bold">🔒</span>
+                <p>
+                  {displayLang === 'ar' 
+                    ? 'تخزين وحفظ آمن ومستمر لتفضيلاتك وحافظة النصوص والصور' 
+                    : 'Secure local storage of safety codes, preferences, clipboard text and images'}
+                </p>
+              </div>
+              <div className="flex items-start gap-3">
+                <span className="text-green-400 mt-0.5 font-bold">📱</span>
+                <p>
+                  {displayLang === 'ar' 
+                    ? 'يعمل كتطبيق هاتف رسمي وبمساحة خفيفة متناهية الصغر' 
+                    : 'Works fully as a native light-weight App with instant startup'}
+                </p>
+              </div>
+            </div>
+
+            <div className="w-full flex flex-col gap-3">
+              <button 
+                onClick={handleInstallClick}
+                className="w-full py-4 bg-white text-black hover:bg-gray-200 active:scale-95 transition-all text-base sm:text-lg font-bold rounded-2xl flex items-center justify-center gap-2 cursor-pointer shadow-[0_0_20px_rgba(255,255,255,0.15)] outline-none border-none"
+              >
+                <Download size={20} strokeWidth={2.5} />
+                {displayLang === 'ar' ? 'تثبيت التطبيق الآن' : 'Install Application Now'}
+              </button>
+
+              <button 
+                onClick={() => setShowAndroidInstallModal(false)}
+                className="w-full py-3 bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white transition-all text-sm font-medium rounded-xl cursor-pointer text-center outline-none border-none"
+              >
+                {displayLang === 'ar' ? 'تصفح مؤقتاً عبر الويب' : 'Continue on Web'}
+              </button>
+            </div>
+
+            {!deferredPrompt && (
+              <div className="mt-4 pt-4 border-t border-white/5 w-full text-center">
+                <p className="text-gray-500 text-xs leading-relaxed">
+                  {displayLang === 'ar' ? (
+                    <>
+                      إذا لم يبدأ التثبيت تلقائياً، يرجى الضغط على <span className="text-red-400 font-bold">●●●</span> في أعلى المتصفح، ثم حدد <span className="text-white font-semibold">"تثبيت التطبيق"</span> أو <span className="text-white font-semibold">"إضافة إلى الشاشة الرئيسية"</span>
+                    </>
+                  ) : (
+                    <>
+                      If install prompt doesn't show up, tap <span className="text-white font-bold text-base">⋮</span> or share button in browser menu and select <span className="text-white font-semibold">"Install app"</span> or <span className="text-white font-semibold">"Add to Home screen"</span>
+                    </>
+                  )}
+                </p>
+              </div>
+            )}
           </div>
         </div>
       )}

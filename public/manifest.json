@@ -1,0 +1,24 @@
+{
+  "name": "Inter Storage",
+  "short_name": "Inter Storage",
+  "description": "حفظ وتخزين أي نص وصورة مهما كان نوعها أو حجمها بأمان وسرعة",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#111111",
+  "theme_color": "#111111",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/logo.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
