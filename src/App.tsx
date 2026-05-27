@@ -818,6 +818,69 @@ export default function App() {
     }
   };
 
+  const downloadShortcutFile = () => {
+    const fileContent = `<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inter Storage</title>
+    <style>
+        body {
+            background-color: #0b0b0b;
+            color: #ffffff;
+            font-family: system-ui, -apple-system, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            text-align: center;
+        }
+        .container {
+            border: 1px solid rgba(255,255,255,0.1);
+            padding: 2.5rem;
+            border-radius: 28px;
+            background: #111111;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            max-width: 400px;
+            width: 90%;
+        }
+        h2 {
+            color: #4ade80;
+            margin-bottom: 10px;
+        }
+        p {
+            color: #a3a3a3;
+            font-size: 15px;
+            line-height: 1.6;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Inter Storage</h2>
+        <p>جاري تحويلك الآن لتشغيل التطبيق بشكل سريع وآمن...</p>
+    </div>
+    <script>
+        setTimeout(() => {
+            window.location.href = "${window.location.origin}";
+        }, 300);
+    </script>
+</body>
+</html>`;
+
+    const blob = new Blob([fileContent], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'Inter_Storage.html';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   const [generatedId, setGeneratedId] = useState('');
   const [password, setPassword] = useState('');
   const [showSignupPassword, setShowSignupPassword] = useState(false);
@@ -1921,13 +1984,16 @@ export default function App() {
               <User size={28} strokeWidth={1.5} />
             </button>
           )}
-          {isMobileDevice && (
+          {currentView === 'home' && (
             <button 
               onClick={() => setShowAndroidInstallModal(true)}
-              className="p-2 mr-2 flex items-center justify-center transition-colors outline-none cursor-pointer text-green-400 hover:text-green-300 active:scale-95 bg-transparent border-none"
-              title={displayLang === 'ar' ? "تثبيت التطبيق" : "Install App"}
+              className="px-3 py-1.5 sm:px-4 sm:py-2 flex items-center gap-2 rounded-full transition-all duration-300 outline-none cursor-pointer text-green-400 hover:text-green-300 bg-green-500/10 border border-green-500/20 hover:bg-green-500/25 active:scale-95 shadow-[0_0_15px_rgba(34,197,94,0.15)] pointer-events-auto"
+              title={displayLang === 'ar' ? "تحميل وتثبيت التطبيق كـ PWA" : "Download & Install App"}
             >
-              <Smartphone size={24} strokeWidth={1.5} className="animate-pulse" />
+              <Smartphone size={18} strokeWidth={2} className="animate-pulse" />
+              <span className="text-xs sm:text-sm font-bold font-sans">
+                {displayLang === 'ar' ? "تنزيل التطبيق" : "Download App"}
+              </span>
             </button>
           )}
         </div>
@@ -4334,42 +4400,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                 : 'Supports instant download & install for all Android devices (Samsung, Xiaomi, Oppo, Realme, Pixel, etc.) across all browsers!'}
             </p>
 
-            {/* Show manual installation instructions if deferredPrompt is not available, or if the user clicks details */}
-            {(!deferredPrompt || showManualInstructions) ? (
-              <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 mb-6 text-xs sm:text-sm text-gray-300 leading-relaxed" dir={displayLang === 'ar' ? 'rtl' : 'ltr'}>
-                <p className="font-bold text-green-400 mb-3 text-center text-sm">
-                  {displayLang === 'ar' ? '💡 طريقة التثبيت السريع على متصفحك الحاصل:' : '💡 Fast Manual Install Instructions:'}
-                </p>
-                <div className="flex flex-col gap-3">
-                  <div className="flex gap-2 items-start">
-                    <span className="font-bold text-green-400 min-w-[18px] text-center">1</span>
-                    <p>
-                      {displayLang === 'ar' 
-                        ? 'اضغط على زر القائمة بالمتصفح (علامة السيرش بالمنيو، أو النقاط الثلاثة ⋮ أعلى اليسار، أو زر القائمة ☰ بالأسفل).' 
-                        : 'Tap the browser menu/share button (three dots ⋮ at the top right, or ☰ at the bottom).'}
-                    </p>
-                  </div>
-                  <div className="flex gap-2 items-start">
-                    <span className="font-bold text-green-400 min-w-[18px] text-center">2</span>
-                    <p>
-                      {displayLang === 'ar' 
-                        ? 'اختر "تثبيت التطبيق" (Install App) أو "إضافة إلى الشاشة الرئيسية" (Add to Home screen).' 
-                        : 'Select "Install app" or "Add to Home screen" option.'}
-                    </p>
-                  </div>
-                  <div className="flex gap-2 items-start">
-                    <span className="font-bold text-green-400 min-w-[18px] text-center">3</span>
-                    <p>
-                      {displayLang === 'ar' 
-                        ? 'سيظهر التطبيق كأيقونة على شاشة جوالك مباشرة ليعمل كتطبيق سريع وخفيف بشكل كامل!' 
-                        : 'The app icon will instantly appear on your screen and act as a full standalone app!'}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            ) : null}
-
-            <div className="w-full flex flex-col gap-3">
+             <div className="w-full flex flex-col gap-3">
               {deferredPrompt ? (
                 <button 
                   onClick={handleInstallClick}
