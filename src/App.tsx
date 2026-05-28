@@ -65,8 +65,8 @@ const appendToGoogleSheet = async (payload: any, retryCount = 0): Promise<any> =
 const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> => {
   return new Promise((resolve) => {
     const handleLoadedImage = (img: HTMLImageElement) => {
-      let maxDim = 150;
-      let quality = 0.5;
+      let maxDim = 600;
+      let quality = 0.75;
       
       const attemptCompress = (): string => {
         const canvas = document.createElement('canvas');
@@ -94,7 +94,7 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
         
         // Try WebP first for ultra efficiency, fall back to JPEG if needed
         let dataUrl = canvas.toDataURL('image/webp', quality);
-        if (dataUrl.length > 4000) {
+        if (dataUrl.length > 45000) {
           dataUrl = canvas.toDataURL('image/jpeg', quality);
         }
         return dataUrl;
@@ -102,13 +102,13 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
       
       let finalDataUrl = attemptCompress();
       
-      // If still too large, reduce dimension and quality on the fly
-      while (finalDataUrl.length > 4000 && (maxDim > 50 || quality > 0.05)) {
-        if (maxDim > 100) {
-          maxDim -= 30;
+      // If still too large, reduce dimension and quality on the fly (up to Google Sheet limits)
+      while (finalDataUrl.length > 45000 && (maxDim > 150 || quality > 0.1)) {
+        if (maxDim > 300) {
+          maxDim -= 100;
         } else {
-          quality = Math.max(0.05, quality - 0.1);
-          maxDim = Math.max(50, maxDim - 10);
+          quality = Math.max(0.1, quality - 0.15);
+          maxDim = Math.max(150, maxDim - 50);
         }
         finalDataUrl = attemptCompress();
       }
