@@ -168,14 +168,24 @@ const shuffleArray = (array: any[]) => {
 };
 
 const getKeywordImageUrl = (keyword: string, lock: number): string => {
-  const cleanKw = encodeURIComponent((keyword || 'random').trim().toLowerCase());
-  return `https://images.unsplash.com/featured/320x240/?${cleanKw}&sig=${lock}`;
+  const cleanKw = (keyword || 'random')
+    .trim()
+    .toLowerCase()
+    .split(/[\s\-_]+/)
+    .map(word => encodeURIComponent(word))
+    .join(',');
+  return `https://loremflickr.com/320/240/${cleanKw}?lock=${lock}`;
 };
 
 const getDeterministicDummyUrl = (keyword: string, userId: string, i: number, j: number): string => {
-  const cleanKw = encodeURIComponent((keyword || 'random').trim().toLowerCase());
+  const cleanKw = (keyword || 'random')
+    .trim()
+    .toLowerCase()
+    .split(/[\s\-_]+/)
+    .map(word => encodeURIComponent(word))
+    .join(',');
   const seed = Array.from(userId || '').reduce((acc, char) => acc + char.charCodeAt(0), 0) + (i * 251) + (j * 97) + 12345;
-  return `https://images.unsplash.com/featured/320x240/?${cleanKw}&sig=${seed}`;
+  return `https://loremflickr.com/320/240/${cleanKw}?lock=${seed}`;
 };
 
 const checkForgotPasswordSetup = async (id: string) => {
@@ -2360,6 +2370,9 @@ export default function App() {
                         const dummies = imgSetup.dummyUrls || [];
                         for (let j = 0; j < 4; j++) {
                            let dummyUrl = dummies[j] || '';
+                           if (dummyUrl.includes('unsplash.com')) {
+                              dummyUrl = '';
+                           }
                            if (!dummyUrl) {
                               dummyUrl = getDeterministicDummyUrl(correctKeyword, loginId, i, j);
                            }
@@ -3895,17 +3908,17 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                                 onError={(e) => {
                                   const target = e.currentTarget;
                                   const keyword = opt.keyword || 'object';
-                                  const cleanKw = encodeURIComponent(keyword.trim().toLowerCase());
+                                  const cleanKw = keyword.trim().toLowerCase().split(/[\s\-_]+/).map(w => encodeURIComponent(w)).join(',');
                                   
                                   if (!target.dataset.triedUnsplash) {
                                     target.dataset.triedUnsplash = 'true';
-                                    target.src = `https://images.unsplash.com/featured/320x240/?${cleanKw}&sig=${idx}`;
+                                    target.src = `https://loremflickr.com/320/240/${cleanKw}?lock=${idx}`;
                                   } else if (!target.dataset.triedFlickr) {
                                     target.dataset.triedFlickr = 'true';
                                     target.src = `https://loremflickr.com/320/240/${cleanKw}?lock=${idx}`;
                                   } else if (!target.dataset.triedPicsum) {
                                     target.dataset.triedPicsum = 'true';
-                                    target.src = `https://images.unsplash.com/featured/320x240/?${cleanKw}&sig=${idx + 22}`;
+                                    target.src = `https://picsum.photos/seed/${idx}/320/240`;
                                   } else if (!target.dataset.triedSecondPicsum) {
                                     target.dataset.triedSecondPicsum = 'true';
                                     target.src = `https://loremflickr.com/320/240/${cleanKw}?lock=${idx + 44}`;
