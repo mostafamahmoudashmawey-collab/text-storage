@@ -167,23 +167,60 @@ const shuffleArray = (array: any[]) => {
   return newArr;
 };
 
+const getCleanTagForDummy = (keyword: string, j: number): string => {
+  const kw = (keyword || 'random').trim().toLowerCase();
+  
+  if (/program|code|tech|comput|laptop|softw|develop|screen|monitor|keyboard/.test(kw)) {
+    const pool = ['coding', 'computer', 'keyboard', 'screen', 'electronics', 'office', 'laptop'];
+    return pool[j % pool.length];
+  }
+  if (/car|auto|vehic|drive|motor|bike|cycle|truck/.test(kw)) {
+    const pool = ['car', 'vehicle', 'automobile', 'highway', 'wheel', 'engine', 'supercar'];
+    return pool[j % pool.length];
+  }
+  if (/cat|dog|pup|kitten|pet|anim|bird|lion|tiger|rabbit|horse|panda|bear/.test(kw)) {
+    const pool = ['animal', 'cat', 'dog', 'wildlife', 'pet', 'puppy', 'kitten'];
+    return pool[j % pool.length];
+  }
+  if (/nature|tree|plant|flower|garden|forest|mountain|river|sea|ocean|beach|sky|lake|sunset/.test(kw)) {
+    const pool = ['nature', 'landscape', 'mountain', 'forest', 'lake', 'ocean', 'sunset'];
+    return pool[j % pool.length];
+  }
+  if (/food|eat|cook|pizza|burger|cake|sweet|fruit|drink|coffee|tea|baking/.test(kw)) {
+    const pool = ['food', 'delicious', 'cooking', 'kitchen', 'restaurant', 'coffee', 'dessert'];
+    return pool[j % pool.length];
+  }
+  if (/house|building|home|architecture|room|interior|city|street|bridge/.test(kw)) {
+    const pool = ['architecture', 'building', 'street', 'interior', 'urban', 'skyline', 'house'];
+    return pool[j % pool.length];
+  }
+  if (/art|paint|draw|color|design|craft|sculpt/.test(kw)) {
+    const pool = ['art', 'painting', 'design', 'abstract', 'creative', 'color', 'pattern'];
+    return pool[j % pool.length];
+  }
+
+  const words = kw.split(/[\s\-_,.]+/).filter(w => w.length > 2);
+  if (words.length > 0) {
+    const targetWord = words[j % words.length];
+    const extensions = ['', 'abstract', 'texture', 'pattern', 'minimal'];
+    const ext = extensions[j % extensions.length];
+    return ext ? `${targetWord},${ext}` : targetWord;
+  }
+  
+  const fallbacks = ['object', 'pattern', 'texture', 'minimal'];
+  return fallbacks[j % fallbacks.length];
+};
+
 const getKeywordImageUrl = (keyword: string, lock: number): string => {
-  const cleanKw = (keyword || 'random')
-    .trim()
-    .toLowerCase()
-    .split(/[\s\-_]+/)
-    .map(word => encodeURIComponent(word))
-    .join(',');
-  return `https://loremflickr.com/320/240/${cleanKw}?lock=${lock}`;
+  const kw = (keyword || 'random').trim().toLowerCase();
+  const words = kw.split(/[\s\-_,.]+/).filter(w => w.length > 2);
+  const tag = words.length > 0 ? words[0] : 'object';
+  return `https://loremflickr.com/320/240/${encodeURIComponent(tag)}?lock=${lock}`;
 };
 
 const getDeterministicDummyUrl = (keyword: string, userId: string, i: number, j: number): string => {
-  const cleanKw = (keyword || 'random')
-    .trim()
-    .toLowerCase()
-    .split(/[\s\-_]+/)
-    .map(word => encodeURIComponent(word))
-    .join(',');
+  const tag = getCleanTagForDummy(keyword, j);
+  const cleanKw = encodeURIComponent(tag);
   const seed = Array.from(userId || '').reduce((acc, char) => acc + char.charCodeAt(0), 0) + (i * 251) + (j * 97) + 12345;
   return `https://loremflickr.com/320/240/${cleanKw}?lock=${seed}`;
 };
@@ -2367,15 +2404,8 @@ export default function App() {
                           keyword: correctKeyword
                         });
                         
-                        const dummies = imgSetup.dummyUrls || [];
                         for (let j = 0; j < 4; j++) {
-                           let dummyUrl = dummies[j] || '';
-                           if (dummyUrl.includes('unsplash.com')) {
-                              dummyUrl = '';
-                           }
-                           if (!dummyUrl) {
-                              dummyUrl = getDeterministicDummyUrl(correctKeyword, loginId, i, j);
-                           }
+                           const dummyUrl = getDeterministicDummyUrl(correctKeyword, loginId, i, j);
                            flatOptions.push({ 
                              type: 'dummy', 
                              url: dummyUrl,
@@ -3908,20 +3938,20 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                                 onError={(e) => {
                                   const target = e.currentTarget;
                                   const keyword = opt.keyword || 'object';
-                                  const cleanKw = keyword.trim().toLowerCase().split(/[\s\-_]+/).map(w => encodeURIComponent(w)).join(',');
+                                  const dummyMatch = opt.id?.match(/dummy_\d+_(\d+)/);
+                                  const j = dummyMatch ? parseInt(dummyMatch[1]) : idx % 4;
+                                  const tag = getCleanTagForDummy(keyword, j);
+                                  const cleanKw = encodeURIComponent(tag);
                                   
                                   if (!target.dataset.triedUnsplash) {
                                     target.dataset.triedUnsplash = 'true';
                                     target.src = `https://loremflickr.com/320/240/${cleanKw}?lock=${idx}`;
                                   } else if (!target.dataset.triedFlickr) {
                                     target.dataset.triedFlickr = 'true';
-                                    target.src = `https://loremflickr.com/320/240/${cleanKw}?lock=${idx}`;
+                                    target.src = `https://loremflickr.com/320/240/object?lock=${idx}`;
                                   } else if (!target.dataset.triedPicsum) {
                                     target.dataset.triedPicsum = 'true';
                                     target.src = `https://picsum.photos/seed/${idx}/320/240`;
-                                  } else if (!target.dataset.triedSecondPicsum) {
-                                    target.dataset.triedSecondPicsum = 'true';
-                                    target.src = `https://loremflickr.com/320/240/${cleanKw}?lock=${idx + 44}`;
                                   } else {
                                     setLoadedImagesCount(c => c + 1);
                                   }
