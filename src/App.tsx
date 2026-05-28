@@ -3880,8 +3880,21 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                                 src={opt.url} 
                                 alt={t('recoveryOptionsAlt', displayLang)} 
                                 className="w-full h-full object-contain" 
-                                onLoad={() => setLoadedImagesCount(c => c + 1)}
-                                onError={() => setLoadedImagesCount(c => c + 1)}
+                                onLoad={() => {
+                                  setLoadedImagesCount(c => c + 1);
+                                }}
+                                onError={(e) => {
+                                  const target = e.currentTarget;
+                                  if (!target.dataset.triedFallback) {
+                                    target.dataset.triedFallback = 'true';
+                                    target.src = `https://picsum.photos/320/240?random=${idx}`;
+                                  } else if (!target.dataset.triedSecondFallback) {
+                                    target.dataset.triedSecondFallback = 'true';
+                                    target.src = `https://picsum.photos/seed/${idx}/320/240`;
+                                  } else {
+                                    setLoadedImagesCount(c => c + 1);
+                                  }
+                                }}
                               />
                               {isSelected && (
                                  <div className="absolute top-2 left-2 bg-blue-500 text-white p-1 rounded-full shadow-lg flex items-center justify-center w-6 h-6">
