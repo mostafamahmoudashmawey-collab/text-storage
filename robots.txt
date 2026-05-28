@@ -10,4 +10,5 @@ Disallow: /node_modules/
 Disallow: /package.json
 
 # رابط خريطة الموقع لسرعة الزحف
-Sitemap: https://inter-storage.vercel.app/sitemap.xml
+Sitemap: https://inter--storage.com/sitemap.xml
+
