@@ -65,8 +65,8 @@ const appendToGoogleSheet = async (payload: any, retryCount = 0): Promise<any> =
 const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> => {
   return new Promise((resolve) => {
     const handleLoadedImage = (img: HTMLImageElement) => {
-      let maxDim = 800;
-      let quality = 0.6;
+      let maxDim = 150;
+      let quality = 0.5;
       
       const attemptCompress = (): string => {
         const canvas = document.createElement('canvas');
@@ -94,7 +94,7 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
         
         // Try WebP first for ultra efficiency, fall back to JPEG if needed
         let dataUrl = canvas.toDataURL('image/webp', quality);
-        if (dataUrl.length > 48000) {
+        if (dataUrl.length > 4000) {
           dataUrl = canvas.toDataURL('image/jpeg', quality);
         }
         return dataUrl;
@@ -103,12 +103,12 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
       let finalDataUrl = attemptCompress();
       
       // If still too large, reduce dimension and quality on the fly
-      while (finalDataUrl.length > 48000 && (maxDim > 100 || quality > 0.1)) {
-        if (maxDim > 300) {
-          maxDim -= 150;
+      while (finalDataUrl.length > 4000 && (maxDim > 50 || quality > 0.05)) {
+        if (maxDim > 100) {
+          maxDim -= 30;
         } else {
-          quality = Math.max(0.1, quality - 0.15);
-          maxDim = Math.max(100, maxDim - 50);
+          quality = Math.max(0.05, quality - 0.1);
+          maxDim = Math.max(50, maxDim - 10);
         }
         finalDataUrl = attemptCompress();
       }
@@ -165,6 +165,17 @@ const shuffleArray = (array: any[]) => {
     [newArr[i], newArr[j]] = [newArr[j], newArr[i]];
   }
   return newArr;
+};
+
+const getKeywordImageUrl = (keyword: string, lock: number): string => {
+  const cleanKw = encodeURIComponent((keyword || 'random').trim().toLowerCase());
+  return `https://images.unsplash.com/featured/320x240/?${cleanKw}&sig=${lock}`;
+};
+
+const getDeterministicDummyUrl = (keyword: string, userId: string, i: number, j: number): string => {
+  const cleanKw = encodeURIComponent((keyword || 'random').trim().toLowerCase());
+  const seed = Array.from(userId || '').reduce((acc, char) => acc + char.charCodeAt(0), 0) + (i * 251) + (j * 97) + 12345;
+  return `https://images.unsplash.com/featured/320x240/?${cleanKw}&sig=${seed}`;
 };
 
 const checkForgotPasswordSetup = async (id: string) => {
@@ -2338,27 +2349,25 @@ export default function App() {
                      const flatOptions: any[] = [];
                      for (let i = 0; i < 5; i++) {
                         const imgSetup = cachedImages[i];
-                        flatOptions.push({ type: 'original', url: imgSetup.originalDataUrl || imgSetup.dataUrl, id: `original_${i}` });
+                        const correctKeyword = imgSetup.keyword || 'random';
+                        flatOptions.push({ 
+                          type: 'original', 
+                          url: imgSetup.originalDataUrl || imgSetup.dataUrl || getKeywordImageUrl(correctKeyword, i + 100), 
+                          id: `original_${i}`,
+                          keyword: correctKeyword
+                        });
                         
-                        const dummies = imgSetup.dummyUrls || imgSetup.dummyLocks || [];
+                        const dummies = imgSetup.dummyUrls || [];
                         for (let j = 0; j < 4; j++) {
-                           let dummyUrl = '';
-                           let lock = 0;
-                           if (dummies[j]) {
-                               const m = dummies[j].match(/lock=(\d+)/);
-                               if (m) lock = parseInt(m[1], 10);
-                               else if (dummies[j].includes('picsum')) lock = parseInt(dummies[j].split('/seed/')[1]?.split('/')[0]) || (i*10 + j);
-                               else lock = (i * 10 + j);
-                           } else {
-                               lock = (i * 10 + j) * 999;
+                           let dummyUrl = dummies[j] || '';
+                           if (!dummyUrl) {
+                              dummyUrl = getDeterministicDummyUrl(correctKeyword, loginId, i, j);
                            }
-                           const keyword = (imgSetup.keyword || 'random').trim().toLowerCase();
-                           const encodedKw = encodeURIComponent(keyword) || 'random';
-                           dummyUrl = `https://loremflickr.com/320/240/${encodedKw}?lock=${lock}`;
                            flatOptions.push({ 
                              type: 'dummy', 
                              url: dummyUrl,
-                             id: `dummy_${i}_${j}`
+                             id: `dummy_${i}_${j}`,
+                             keyword: correctKeyword
                            });
                         }
                      }
@@ -3885,11 +3894,20 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                                 }}
                                 onError={(e) => {
                                   const target = e.currentTarget;
-                                  if (!target.dataset.triedFallback) {
-                                    target.dataset.triedFallback = 'true';
+                                  const keyword = opt.keyword || 'random';
+                                  const cleanKw = encodeURIComponent(keyword.trim().toLowerCase());
+                                  
+                                  if (!target.dataset.triedUnsplash) {
+                                    target.dataset.triedUnsplash = 'true';
+                                    target.src = `https://images.unsplash.com/featured/320x240/?${cleanKw}&sig=${idx}`;
+                                  } else if (!target.dataset.triedFlickr) {
+                                    target.dataset.triedFlickr = 'true';
+                                    target.src = `https://loremflickr.com/320/240/${cleanKw}?lock=${idx}`;
+                                  } else if (!target.dataset.triedPicsum) {
+                                    target.dataset.triedPicsum = 'true';
                                     target.src = `https://picsum.photos/320/240?random=${idx}`;
-                                  } else if (!target.dataset.triedSecondFallback) {
-                                    target.dataset.triedSecondFallback = 'true';
+                                  } else if (!target.dataset.triedSecondPicsum) {
+                                    target.dataset.triedSecondPicsum = 'true';
                                     target.src = `https://picsum.photos/seed/${idx}/320/240`;
                                   } else {
                                     setLoadedImagesCount(c => c + 1);
@@ -4095,21 +4113,20 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                       
                       const generatedSetup = fpSetupImages.map((img, i) => {
                          const keyword = img.keyword.trim().toLowerCase();
-                         const encodedKw = encodeURIComponent(keyword) || 'random';
                          return {
                            id: String(i),
                            originalDataUrl: img.dataUrl,
                            keyword: keyword,
                            dummyUrls: [
-                             `https://loremflickr.com/320/240/${encodedKw}?lock=${Math.floor(Math.random() * 1000000) + 1}`,
-                             `https://loremflickr.com/320/240/${encodedKw}?lock=${Math.floor(Math.random() * 1000000) + 1}`,
-                             `https://loremflickr.com/320/240/${encodedKw}?lock=${Math.floor(Math.random() * 1000000) + 1}`,
-                             `https://loremflickr.com/320/240/${encodedKw}?lock=${Math.floor(Math.random() * 1000000) + 1}`
+                             getDeterministicDummyUrl(keyword, currentUserId, i, 0),
+                             getDeterministicDummyUrl(keyword, currentUserId, i, 1),
+                             getDeterministicDummyUrl(keyword, currentUserId, i, 2),
+                             getDeterministicDummyUrl(keyword, currentUserId, i, 3)
                            ]
                          };
                       });
                       
-                      localStorage.setItem(`fp_setup_${currentUserId}`, JSON.stringify({ images: generatedSetup }));
+                      localStorage.setItem(`fp_setup_${currentUserId}`, JSON.stringify({ enabled: true, images: generatedSetup }));
   
                       await appendToGoogleSheet({
                         action: "ADD",
