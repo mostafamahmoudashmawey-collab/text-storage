@@ -3894,7 +3894,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                                 }}
                                 onError={(e) => {
                                   const target = e.currentTarget;
-                                  const keyword = opt.keyword || 'random';
+                                  const keyword = opt.keyword || 'object';
                                   const cleanKw = encodeURIComponent(keyword.trim().toLowerCase());
                                   
                                   if (!target.dataset.triedUnsplash) {
@@ -3905,10 +3905,10 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                                     target.src = `https://loremflickr.com/320/240/${cleanKw}?lock=${idx}`;
                                   } else if (!target.dataset.triedPicsum) {
                                     target.dataset.triedPicsum = 'true';
-                                    target.src = `https://picsum.photos/320/240?random=${idx}`;
+                                    target.src = `https://images.unsplash.com/featured/320x240/?${cleanKw}&sig=${idx + 22}`;
                                   } else if (!target.dataset.triedSecondPicsum) {
                                     target.dataset.triedSecondPicsum = 'true';
-                                    target.src = `https://picsum.photos/seed/${idx}/320/240`;
+                                    target.src = `https://loremflickr.com/320/240/${cleanKw}?lock=${idx + 44}`;
                                   } else {
                                     setLoadedImagesCount(c => c + 1);
                                   }
