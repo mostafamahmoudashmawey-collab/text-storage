@@ -2013,8 +2013,9 @@ export default function App() {
   return (
     <div className={`min-h-screen w-full bg-black relative flex flex-col items-center justify-center gap-4 text-white ${theme === 'light' ? 'light-mode' : ''}`} >
       <header className="absolute top-0 left-0 right-0 h-[72px] flex items-center justify-between px-4 sm:px-6 w-full z-40 pointer-events-none" dir="ltr">
-        <div className="flex items-center justify-start text-lg text-gray-500 font-sans pointer-events-none w-auto sm:w-[200px] flex-shrink-0">
-          <span>Inter Storage</span>
+        <div className="flex items-center justify-start gap-2.5 text-lg text-white font-sans pointer-events-auto cursor-pointer w-auto sm:w-[200px] flex-shrink-0 select-none" onClick={() => { if (currentUserId && currentView === 'dashboard') { return; } else if (currentUserId) { setCurrentView('dashboard'); } else { setCurrentView('home'); } }}>
+          <img src="/logo.png" className="w-8 h-8 rounded-lg object-cover border border-white/10 shadow-[0_0_10px_rgba(255,255,255,0.1)] active:scale-95 transition-all" alt="Inter Storage Logo" />
+          <span className="font-semibold text-white tracking-tight">Inter Storage</span>
         </div>
 
         {currentView === 'dashboard' && (
@@ -2188,14 +2189,26 @@ export default function App() {
       )}
 
       {currentView === 'home' && (
-        <>
-          <button onClick={() => { setLoginId(''); setLoginPassword(''); setCurrentView('login'); }} className="cursor-pointer w-56 bg-transparent hover:bg-white/10 text-white font-medium py-2 px-8 rounded-full border border-gray-500 hover:border-white transition-all hover:scale-105 active:scale-95 text-lg tracking-wide">
-            {t('homeFirstButton', displayLang)}
-          </button>
-          <button onClick={handleGoToSignup} className="cursor-pointer w-56 bg-white hover:bg-gray-100 text-black font-medium py-2 px-8 rounded-full shadow-[0_0_15px_rgba(255,255,255,0.2)] transition-all hover:scale-105 active:scale-95 text-lg tracking-wide">
-            {t('homeSecondButton', displayLang)}
-          </button>
-        </>
+        <div className="flex flex-col items-center justify-center gap-6 max-w-sm px-6 text-center select-none animate-fadeIn">
+          <div className="flex flex-col items-center gap-4 mb-4">
+            <div className="relative">
+              <div className="absolute inset-0 bg-cyan-500/20 blur-2xl rounded-full" />
+              <img src="/logo.png" className="relative w-32 h-32 sm:w-36 sm:h-36 rounded-3xl object-cover shadow-[0_0_40px_rgba(34,211,238,0.25)] border border-cyan-500/30 hover:scale-105 duration-500 transition-transform cursor-pointer" alt="Inter Storage Logo" />
+            </div>
+            <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-white mt-4 font-sans bg-clip-text text-transparent bg-gradient-to-b from-white to-gray-400">Inter Storage</h1>
+            <p className="text-gray-400 text-sm leading-relaxed max-w-[280px]">
+              {displayLang === 'ar' ? "المنصة العالمية لحفظ وتخزين كافة النصوص والصور بأمان تام وسرعة فائقة." : "The global platform to save and store all texts and images securely and extremely fast."}
+            </p>
+          </div>
+          <div className="flex flex-col gap-3.5 w-56 mt-4">
+            <button onClick={() => { setLoginId(''); setLoginPassword(''); setCurrentView('login'); }} className="cursor-pointer w-full bg-transparent hover:bg-white/10 text-white font-medium py-3 px-8 rounded-xl border border-white/20 hover:border-white transition-all hover:scale-105 active:scale-95 text-lg tracking-wide">
+              {t('homeFirstButton', displayLang)}
+            </button>
+            <button onClick={handleGoToSignup} className="cursor-pointer w-full bg-white hover:bg-gray-100 text-black font-semibold py-3 px-8 rounded-xl shadow-[0_0_20px_rgba(255,255,255,0.15)] transition-all hover:scale-105 active:scale-95 text-lg tracking-wide">
+              {t('homeSecondButton', displayLang)}
+            </button>
+          </div>
+        </div>
       )}
 
       {currentView === 'signup' && (
