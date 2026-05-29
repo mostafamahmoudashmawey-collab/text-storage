@@ -852,17 +852,9 @@ export default function App() {
       setIsAppInstalled(true);
     }
 
-    const hasSession = localStorage.getItem('userSession');
-
     const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
       setDeferredPrompt(e);
-      
-      if (isAndroid && !checkStandalone && !hasSession) {
-        setTimeout(() => {
-          setShowAndroidInstallModal(true);
-        }, 1500);
-      }
     };
 
     const handleAppInstalled = () => {
@@ -874,12 +866,6 @@ export default function App() {
 
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
     window.addEventListener('appinstalled', handleAppInstalled);
-
-    if (isAndroid && !checkStandalone && !hasSession) {
-      setTimeout(() => {
-        setShowAndroidInstallModal(true);
-      }, 2500);
-    }
 
     return () => {
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
@@ -978,6 +964,28 @@ export default function App() {
   const [currentPassword, setCurrentPassword] = useState('');
 
   const displayLang: Language = currentUserId ? language : 'en';
+
+  // Fully reactive control of the Android install modal to prevent leaking into signup/login or showing when logged in
+  useEffect(() => {
+    const hasSession = localStorage.getItem('userSession');
+    
+    // Conditions: Must be on Android, NOT installed, NOT logged in (both from state and storage), and on the HOME view
+    if (isAndroidDevice && !isAppInstalled && !currentUserId && !hasSession && currentView === 'home') {
+      const timer = setTimeout(() => {
+        // Double check all conditions dynamically at the exact point of execution
+        const stillInHome = !localStorage.getItem('userSession') && !currentUserId && currentView === 'home' && !isAppInstalled;
+        if (stillInHome) {
+          setShowAndroidInstallModal(true);
+        }
+      }, 2500);
+      
+      return () => {
+        clearTimeout(timer);
+      };
+    } else {
+      setShowAndroidInstallModal(false);
+    }
+  }, [isAndroidDevice, isAppInstalled, currentUserId, currentView]);
 
   useEffect(() => {
     const savedLang = localStorage.getItem('website_language');
