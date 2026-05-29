@@ -4535,6 +4535,15 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
         </div>
       )}
 
+      {/* Footer Text */}
+      {currentView === 'home' && (
+        <footer className="absolute bottom-6 left-0 right-0 text-center select-none pointer-events-none z-40">
+          <p className="text-white/30 text-xs sm:text-sm font-medium tracking-wide font-sans">
+            Developed and founded by Mustafa Mahmoud
+          </p>
+        </footer>
+      )}
+
     </div>
   );
 }
