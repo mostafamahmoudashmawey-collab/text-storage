@@ -971,20 +971,9 @@ export default function App() {
   useEffect(() => {
     const hasSession = localStorage.getItem('userSession');
     
-    // Conditions: Must be on Android, NOT installed, NOT logged in (both from state and storage), and on the HOME view
-    if (isAndroidDevice && !isAppInstalled && !currentUserId && !hasSession && currentView === 'home') {
-      const timer = setTimeout(() => {
-        // Double check all conditions dynamically at the exact point of execution
-        const stillInHome = !localStorage.getItem('userSession') && !currentUserId && currentView === 'home' && !isAppInstalled;
-        if (stillInHome) {
-          setShowAndroidInstallModal(true);
-        }
-      }, 2500);
-      
-      return () => {
-        clearTimeout(timer);
-      };
-    } else {
+    // Conditions check: if NO LONGER on home, or logged in, or already installed, make sure the modal is closed
+    const isValid = isAndroidDevice && !isAppInstalled && !currentUserId && !hasSession && currentView === 'home';
+    if (!isValid) {
       setShowAndroidInstallModal(false);
     }
   }, [isAndroidDevice, isAppInstalled, currentUserId, currentView]);
