@@ -1,0 +1,6 @@
+# يسمح لجميع محركات البحث بالدخول لموقعك
+User-agent: *
+Allow: /
+
+# يخبر جوجل بمكان خريطة الموقع لتحديث البيانات بسرعة
+Sitemap: https://inter--storage.com/sitemap.xml
