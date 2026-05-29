@@ -831,25 +831,28 @@ export default function App() {
   const [isAppInstalled, setIsAppInstalled] = useState(() => {
     if (typeof window !== 'undefined') {
       const isStandalone = window.matchMedia('(display-mode: standalone)').matches || 
-                           (window.navigator as any).standalone;
-      return isStandalone || localStorage.getItem('app_installed') === 'true';
+                           (window.navigator as any).standalone === true;
+      return isStandalone;
     }
     return false;
   });
 
    useEffect(() => {
     const ua = navigator.userAgent.toLowerCase();
-    const isAndroid = /android/.test(ua);
-    const isMobile = /iphone|ipad|ipod|android|blackberry|iemobile|opera mini/.test(ua);
+    const isAndroid = /android|adr/i.test(ua) || 
+                      (navigator.platform && /android/i.test(navigator.platform)) ||
+                      (/linux/i.test(navigator.platform) && navigator.maxTouchPoints > 0 && !/iphone|ipad|ipod/i.test(ua));
+    const isMobile = /iphone|ipad|ipod|android|blackberry|iemobile|opera mini/.test(ua) || isAndroid;
     setIsAndroidDevice(isAndroid);
     setIsMobileDevice(isMobile);
 
     const checkStandalone = window.matchMedia('(display-mode: standalone)').matches || 
-                           (window.navigator as any).standalone || 
-                           localStorage.getItem('app_installed') === 'true';
+                           (window.navigator as any).standalone === true;
 
     if (checkStandalone) {
       setIsAppInstalled(true);
+    } else {
+      setIsAppInstalled(false);
     }
 
     const handleBeforeInstallPrompt = (e: Event) => {
@@ -861,7 +864,6 @@ export default function App() {
       setIsAppInstalled(true);
       setShowAndroidInstallModal(false);
       setDeferredPrompt(null);
-      localStorage.setItem('app_installed', 'true');
     };
 
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
