@@ -837,7 +837,7 @@ export default function App() {
     return false;
   });
 
-  useEffect(() => {
+   useEffect(() => {
     const ua = navigator.userAgent.toLowerCase();
     const isAndroid = /android/.test(ua);
     const isMobile = /iphone|ipad|ipod|android|blackberry|iemobile|opera mini/.test(ua);
@@ -852,15 +852,15 @@ export default function App() {
       setIsAppInstalled(true);
     }
 
+    const hasSession = localStorage.getItem('userSession');
+
     const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
       setDeferredPrompt(e);
       
-      const hasPrompted = sessionStorage.getItem('pwa_install_prompted');
-      if (!hasPrompted && !checkStandalone) {
+      if (isAndroid && !checkStandalone && !hasSession) {
         setTimeout(() => {
           setShowAndroidInstallModal(true);
-          sessionStorage.setItem('pwa_install_prompted', 'true');
         }, 1500);
       }
     };
@@ -875,11 +875,9 @@ export default function App() {
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
     window.addEventListener('appinstalled', handleAppInstalled);
 
-    const hasPrompted = sessionStorage.getItem('pwa_install_prompted');
-    if (isMobile && !hasPrompted && !checkStandalone) {
+    if (isAndroid && !checkStandalone && !hasSession) {
       setTimeout(() => {
         setShowAndroidInstallModal(true);
-        sessionStorage.setItem('pwa_install_prompted', 'true');
       }, 2500);
     }
 
@@ -897,7 +895,8 @@ export default function App() {
       setDeferredPrompt(null);
       setShowAndroidInstallModal(false);
     } else {
-      setShowManualInstructions(true);
+      downloadShortcutFile();
+      setShowAndroidInstallModal(false);
     }
   };
 
@@ -2068,15 +2067,15 @@ export default function App() {
               <User size={28} strokeWidth={1.5} />
             </button>
           )}
-          {currentView === 'home' && isAndroidDevice && !isAppInstalled && (
+          {currentView === 'home' && isAndroidDevice && !isAppInstalled && !currentUserId && (
             <button 
               onClick={() => setShowAndroidInstallModal(true)}
-              className="px-3 py-1.5 sm:px-4 sm:py-2 flex items-center gap-2 rounded-full transition-all duration-300 outline-none cursor-pointer text-green-400 hover:text-green-300 bg-green-500/10 border border-green-500/20 hover:bg-green-500/25 active:scale-95 shadow-[0_0_15px_rgba(34,197,94,0.15)] pointer-events-auto"
-              title={displayLang === 'ar' ? "تحميل وتثبيت التطبيق كـ PWA" : "Download & Install App"}
+              className="px-3.5 py-1.5 sm:px-4 sm:py-2 flex items-center gap-2 rounded-xl transition-all duration-300 outline-none cursor-pointer text-cyan-400 hover:text-cyan-300 bg-cyan-500/10 border border-cyan-500/20 hover:bg-cyan-500/20 active:scale-95 shadow-[0_0_15px_rgba(34,211,238,0.15)] pointer-events-auto select-none"
+              title={displayLang === 'ar' ? "تنزيل تطبيق انتر اندرويد" : "Download Inter Android App"}
             >
-              <Smartphone size={18} strokeWidth={2} />
+              <Download size={16} strokeWidth={2.5} className="animate-pulse" />
               <span className="text-xs sm:text-sm font-bold font-sans">
-                {displayLang === 'ar' ? "تنزيل التطبيق" : "Download App"}
+                {displayLang === 'ar' ? "تنزيل" : "Download"}
               </span>
             </button>
           )}
@@ -4480,10 +4479,10 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
         </div>
       )}
 
-      {showAndroidInstallModal && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-md px-4" onClick={() => { setShowAndroidInstallModal(false); setShowManualInstructions(false); }}>
+      {showAndroidInstallModal && currentView === 'home' && isAndroidDevice && !isAppInstalled && !currentUserId && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/85 backdrop-blur-md px-4" onClick={() => { setShowAndroidInstallModal(false); setShowManualInstructions(false); }}>
           <div 
-            className="bg-[#0c0c0c] border border-white/10 p-6 sm:p-8 flex flex-col items-center w-full max-w-sm sm:max-w-md shadow-[0_0_50px_rgba(0,0,0,0.9)] relative rounded-3xl"
+            className="bg-[#0c0c0c] border border-white/10 p-6 sm:p-8 flex flex-col items-center w-full max-w-sm shadow-[0_0_50px_rgba(34,211,238,0.15)] relative rounded-3xl animate-fadeIn"
             onClick={(e) => e.stopPropagation()}
             dir={displayLang === 'ar' ? 'rtl' : 'ltr'}
           >
@@ -4494,46 +4493,32 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
               <X size={24} />
             </button>
 
-            <div className="w-20 h-20 bg-green-500/10 border border-green-500/20 rounded-full flex items-center justify-center mb-6 relative">
-              <Smartphone size={40} className="text-green-400" strokeWidth={1.5} />
-              <div className="absolute bottom-1 right-1 bg-green-500 text-black rounded-full p-1 border-2 border-[#0c0c0c]">
-                <Download size={14} strokeWidth={2.5} />
+            <div className="relative mb-6">
+              <div className="absolute inset-0 bg-cyan-500/20 blur-xl rounded-full animate-pulse" />
+              <img src="/logo.png" className="relative w-24 h-24 rounded-3xl object-cover border border-cyan-500/30 shadow-[0_0_25px_rgba(34,211,238,0.25)]" alt="Inter Storage Logo" />
+              <div className="absolute -bottom-1 -right-1 bg-cyan-500 text-black rounded-full p-2 border-4 border-[#0c0c0c] shadow-lg flex items-center justify-center">
+                <Download size={14} strokeWidth={3} className="text-black animate-bounce" />
               </div>
             </div>
 
-            <h3 className="text-xl sm:text-2xl font-bold text-white text-center mb-2 font-sans">
-              {displayLang === 'ar' ? 'تثبيت التطبيق على أندرويد' : 'Install App on Android'}
+            <h3 className="text-2xl sm:text-3xl font-extrabold text-white text-center mb-6 font-sans tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white via-cyan-100 to-gray-400">
+              {displayLang === 'ar' ? 'انتر اندرويد' : 'Inter Android'}
             </h3>
-            <p className="text-gray-400 text-sm text-center mb-6 max-w-[320px]">
-              {displayLang === 'ar' 
-                ? 'يدعم التنزيل والتثبيت الفوري لجميع هواتف أندرويد (سامسونج، شاومي، أوبو، ريلمي، وغيرها) بكافة أنواع المتصفحات!' 
-                : 'Supports instant download & install for all Android devices (Samsung, Xiaomi, Oppo, Realme, Pixel, etc.) across all browsers!'}
-            </p>
 
-             <div className="w-full flex flex-col gap-3">
-              {deferredPrompt ? (
-                <button 
-                  onClick={handleInstallClick}
-                  className="w-full py-4 bg-white text-black hover:bg-gray-200 active:scale-95 transition-all text-base sm:text-lg font-bold rounded-2xl flex items-center justify-center gap-2 cursor-pointer shadow-[0_0_20px_rgba(255,255,255,0.15)] outline-none border-none"
-                >
-                  <Download size={20} strokeWidth={2.5} />
-                  {displayLang === 'ar' ? 'تثبيت التطبيق الآن' : 'Install Application Now'}
-                </button>
-              ) : (
-                <button 
-                  onClick={() => { setShowAndroidInstallModal(false); setShowManualInstructions(false); }}
-                  className="w-full py-4 bg-white text-black hover:bg-gray-200 active:scale-95 transition-all text-base sm:text-lg font-bold rounded-2xl flex items-center justify-center gap-2 cursor-pointer shadow-[0_0_20px_rgba(255,255,255,0.15)] outline-none border-none"
-                >
-                  <Check size={20} strokeWidth={2.5} />
-                  {displayLang === 'ar' ? 'حسناً، فهمت الطريقة' : 'Got it, I understand'}
-                </button>
-              )}
+            <div className="w-full flex flex-col gap-3.5">
+              <button 
+                onClick={handleInstallClick}
+                className="w-full py-4 bg-white text-black hover:bg-gray-100 active:scale-95 transition-all text-base sm:text-lg font-bold rounded-2xl flex items-center justify-center gap-2 cursor-pointer shadow-[0_0_20px_rgba(255,255,255,0.15)] outline-none border-none"
+              >
+                <Download size={20} strokeWidth={2.5} className="text-black" />
+                {displayLang === 'ar' ? 'تنزيل' : 'Download'}
+              </button>
 
               <button 
                 onClick={() => { setShowAndroidInstallModal(false); setShowManualInstructions(false); }}
-                className="w-full py-3 bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white transition-all text-sm font-medium rounded-xl cursor-pointer text-center outline-none border-none"
+                className="w-full py-3.5 bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white transition-all text-sm font-semibold rounded-xl cursor-pointer text-center outline-none border-none"
               >
-                {displayLang === 'ar' ? 'تصفح مؤقتاً عبر الويب' : 'Continue on Web'}
+                {displayLang === 'ar' ? 'متابعة من خلال المتصفح' : 'Continue on Web'}
               </button>
             </div>
           </div>
