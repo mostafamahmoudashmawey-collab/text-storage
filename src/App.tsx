@@ -4526,9 +4526,17 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
 
       {/* Footer Text */}
       {currentView === 'home' && (
-        <footer className="absolute bottom-6 left-0 right-0 text-center select-none pointer-events-none z-40">
-          <p className="text-white/30 text-xs sm:text-sm font-medium tracking-wide font-sans">
-            Developed and founded by Mustafa Mahmoud
+        <footer className="absolute bottom-6 left-0 right-0 text-center pointer-events-none z-40">
+          <p className="text-white/60 text-xs sm:text-sm font-medium tracking-wide font-sans select-text pointer-events-auto">
+            Developed and founded by{' '}
+            <a 
+              href="https://mail.google.com/mail/?view=cm&fs=1&to=info@inter--storage.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-cyan-400 hover:text-cyan-300 underline decoration-cyan-500/50 underline-offset-4 cursor-pointer transition-colors duration-200"
+            >
+              info@inter--storage.com
+            </a>
           </p>
         </footer>
       )}
