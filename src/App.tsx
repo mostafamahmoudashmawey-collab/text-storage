@@ -78,6 +78,14 @@ const appendToGoogleSheet = async (payload: any, retryCount = 0): Promise<any> =
       mode: "no-cors",
       ...(canKeepAlive ? { keepalive: true } : {})
     });
+
+    // Notify that a Google Sheet write was 100% successful (excellent network connectivity indicator)
+    try {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('google_sheet_write_success'));
+      }
+    } catch (e) {}
+
     return {};
   } catch (error) {
     if (retryCount < 20) {
@@ -423,6 +431,70 @@ const syncAllPendingLocalChanges = async (userId: string) => {
     }
   } catch (e) {
     console.error("Error in syncAllPendingLocalChanges", e);
+  }
+};
+
+const syncAllUnsyncedTextsGlobally = async () => {
+  const remainingPendingUsers = await syncPendingSignups();
+  if (remainingPendingUsers > 0) {
+    console.log(`[Global Sync] Skipping text/image sync because there are still ${remainingPendingUsers} pending user credentials to sync first.`);
+    return;
+  }
+  try {
+    const localDb = await initLocalDB();
+    const unsyncedItems: any[] = await new Promise((resolve, reject) => {
+      const tx = localDb.transaction('texts', 'readonly');
+      const store = tx.objectStore('texts');
+      const req = store.getAll();
+      req.onsuccess = () => {
+        const items = req.result.filter((i: any) => i.synced === false);
+        resolve(items);
+      };
+      req.onerror = () => reject(req.error);
+    });
+
+    if (unsyncedItems.length === 0) return;
+    console.log(`[Global Sync] Found ${unsyncedItems.length} unsynced items. Processing...`);
+
+    for (const item of unsyncedItems) {
+      try {
+        if (item.deleted) {
+          await appendToGoogleSheet({
+            action: "DELETE",
+            id: item.id,
+            userid: "DELETED",
+            text: "[[DELETED]]",
+            timestamp: item.timestamp || Date.now(),
+            starred: -1
+          });
+        } else {
+          await appendToGoogleSheet({
+            action: "ADD",
+            id: item.id,
+            userid: item.userId,
+            text: item.text,
+            timestamp: item.timestamp,
+            starred: item.starred ? 1 : 0
+          });
+        }
+
+        // Mark as synced locally
+        await new Promise<void>((resolve, reject) => {
+          const tx = localDb.transaction('texts', 'readwrite');
+          const store = tx.objectStore('texts');
+          const req = store.put({ ...item, synced: true });
+          req.onsuccess = () => resolve();
+          req.onerror = reject;
+        });
+
+        window.dispatchEvent(new CustomEvent('local_item_synced', { detail: item.id }));
+      } catch (err) {
+        console.error(`[Global Sync] Failed to sync item ${item.id}`, err);
+        break; // Stop loop on failure (likely lost background connectivity)
+      }
+    }
+  } catch (e) {
+    console.error("[Global Sync] Error details:", e);
   }
 };
 
@@ -1054,28 +1126,43 @@ export default function App() {
       }
     };
 
-    // Run custom connectivity lookup immediately and then schedule the interval
+    const handleInstantCascadeSync = () => {
+      console.log("[Instant Cascade Sync] Connectivity verified! Instantly flushing all pending local changes in priority sequence...");
+      setIsOnline(true);
+      // Sequentially sync registrations FIRST, then textual/media data!
+      syncPendingSignups().then((remainingUsers) => {
+        if (remainingUsers === 0) {
+          syncAllUnsyncedTextsGlobally().catch(() => {});
+        }
+      }).catch(() => {});
+    };
+
+    // Run custom connectivity lookup immediately
     checkActualOnlineStatus();
-    const interval = setInterval(checkActualOnlineStatus, 30000);
+    
+    // Check actual online status and execute sequential background sync cycles every 3 seconds to stay robust against brief network windows!
+    const interval = setInterval(() => {
+      checkActualOnlineStatus();
+      handleInstantCascadeSync();
+    }, 3000);
 
     const handleOnline = () => {
       setIsOnline(true);
       checkActualOnlineStatus();
-      // Trigger instant sync when coming online
-      const savedUser = localStorage.getItem('session_userId');
-      if (savedUser) {
-        syncAllPendingLocalChanges(savedUser).catch(() => {});
-      }
+      handleInstantCascadeSync();
     };
+    
     const handleOffline = () => setIsOnline(false);
 
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
+    window.addEventListener('google_sheet_write_success', handleInstantCascadeSync);
 
     return () => {
       clearInterval(interval);
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('google_sheet_write_success', handleInstantCascadeSync);
     };
   }, []);
 
@@ -2180,10 +2267,10 @@ export default function App() {
       // Trigger an immediate sync upon entering
       fetchAndSync();
 
-      // Retry pending uploads and registrations locally every 15s when active on dashboard
+      // Retry pending uploads and registrations locally every 3s when active on dashboard
       const retryInterval = setInterval(async () => {
         await syncAllPendingLocalChanges(currentUserId);
-      }, 15000);
+      }, 3000);
       
       return () => {
         if (syncInterval) clearInterval(syncInterval);
