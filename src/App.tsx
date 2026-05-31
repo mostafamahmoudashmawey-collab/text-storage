@@ -283,6 +283,106 @@ const initLocalDB = (): Promise<IDBDatabase> => {
 };
 
 const TAB_ID = Math.random().toString(36).substring(2);
+const getUnsyncedLocalTexts = async (userId: string): Promise<any[]> => {
+  try {
+    const localDb = await initLocalDB();
+    return await new Promise<any[]>((resolve, reject) => {
+      const tx = localDb.transaction('texts', 'readonly');
+      const store = tx.objectStore('texts');
+      const index = store.index('userId');
+      const req = index.getAll(userId);
+      req.onsuccess = () => {
+        const items = req.result.filter((i: any) => i.synced === false);
+        resolve(items);
+      };
+      req.onerror = () => reject(req.error);
+    });
+  } catch (e) {
+    console.error("Local fetch error for unsynced items", e);
+    return [];
+  }
+};
+
+const syncPendingSignups = async () => {
+  const pendingStr = localStorage.getItem('pending_signups');
+  if (!pendingStr) return;
+  try {
+    const list = JSON.parse(pendingStr);
+    if (Array.isArray(list) && list.length > 0) {
+      console.log(`[Offline Sync] Syncing ${list.length} pending offline signups...`);
+      for (const item of list) {
+        try {
+          await appendToGoogleSheet({
+              action: "ADD",
+              id: item.id,
+              userid: "USER_AUTH",
+              text: item.password,
+              timestamp: Date.now(),
+              starred: 0
+          });
+          const updated = JSON.parse(localStorage.getItem('pending_signups') || '[]');
+          const filtered = updated.filter((u: any) => u.id !== item.id);
+          localStorage.setItem('pending_signups', JSON.stringify(filtered));
+        } catch (e) {
+          break;
+        }
+      }
+    }
+  } catch (e) {
+    console.error("Error syncing pending signups", e);
+  }
+};
+
+const syncAllPendingLocalChanges = async (userId: string) => {
+  await syncPendingSignups();
+  try {
+    const unsyncedItems = await getUnsyncedLocalTexts(userId);
+    if (unsyncedItems.length === 0) return;
+    
+    console.log(`[Offline Sync] Retrying ${unsyncedItems.length} unsynced items...`);
+
+    for (const item of unsyncedItems) {
+      try {
+        if (item.deleted) {
+          await appendToGoogleSheet({
+            action: "DELETE",
+            id: item.id,
+            userid: "DELETED",
+            text: "[[DELETED]]",
+            timestamp: item.timestamp || Date.now(),
+            starred: -1
+          });
+        } else {
+          await appendToGoogleSheet({
+            action: "ADD",
+            id: item.id,
+            userid: item.userId,
+            text: item.text,
+            timestamp: item.timestamp,
+            starred: item.starred ? 1 : 0
+          });
+        }
+        
+        const localDb = await initLocalDB();
+        await new Promise<void>((resolve, reject) => {
+          const tx = localDb.transaction('texts', 'readwrite');
+          const store = tx.objectStore('texts');
+          const req = store.put({ ...item, synced: true });
+          req.onsuccess = () => resolve();
+          req.onerror = reject;
+        });
+
+        window.dispatchEvent(new CustomEvent('local_item_synced', { detail: item.id }));
+      } catch (err) {
+        console.error(`Failed to sync item ${item.id}`, err);
+        break;
+      }
+    }
+  } catch (e) {
+    console.error("Error in syncAllPendingLocalChanges", e);
+  }
+};
+
 let lastLocalWriteTime = 0;
 const pendingDeletedIds = new Set<string>();
 
@@ -636,8 +736,32 @@ const registerUser = async (id: string, pass: string) => {
         starred: 0
     });
     success = true;
+    
+    // Clean up if it was in pending signups
+    const pendingStr = localStorage.getItem('pending_signups');
+    if (pendingStr) {
+      try {
+        const list = JSON.parse(pendingStr);
+        if (Array.isArray(list)) {
+          const filtered = list.filter((u: any) => u.id !== id);
+          localStorage.setItem('pending_signups', JSON.stringify(filtered));
+        }
+      } catch (err) {}
+    }
   } catch (e) {
     console.error("Google Sheets register error", e);
+    // Queue offline signup so it can be registered when internet is back
+    try {
+      const pendingStr = localStorage.getItem('pending_signups') || '[]';
+      const list = JSON.parse(pendingStr);
+      if (Array.isArray(list)) {
+        if (!list.some((u: any) => u.id === id)) {
+          list.push({ id, password: pass });
+          localStorage.setItem('pending_signups', JSON.stringify(list));
+        }
+      }
+    } catch (err) {}
+    success = true; // Mark as success so they can use the dashboard offline immediately
   }
   return success;
 };
@@ -822,6 +946,27 @@ export default function App() {
   const [showLanguagePopup, setShowLanguagePopup] = useState(false);
   const [currentView, setCurrentView] = useState<'home' | 'signup' | 'login' | 'dashboard'>('home');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [isOnline, setIsOnline] = useState(() => typeof navigator !== 'undefined' ? navigator.onLine : true);
+
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      // Trigger instant sync when coming online
+      const savedUser = localStorage.getItem('session_userId');
+      if (savedUser) {
+        syncAllPendingLocalChanges(savedUser).catch(() => {});
+      }
+    };
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [showAndroidInstallModal, setShowAndroidInstallModal] = useState(false);
@@ -1924,18 +2069,10 @@ export default function App() {
       // Trigger an immediate sync upon entering
       fetchAndSync();
 
-      // Retry pending uploads locally every 30 seconds as long as we are here
+      // Retry pending uploads and registrations locally every 15s when active on dashboard
       const retryInterval = setInterval(async () => {
-        const localTexts = await getTextsFromLocalDB(currentUserId);
-        const pending = localTexts.filter(t => t.synced === false);
-        if (pending.length > 0) {
-          console.log(`Auto-retrying ${pending.length} pending uploads...`);
-          // We fire them in parallel, let the background tasks handle it
-          pending.forEach(item => {
-            saveTextToDB(item, false).catch(() => {});
-          });
-        }
-      }, 30000);
+        await syncAllPendingLocalChanges(currentUserId);
+      }, 15000);
       
       return () => {
         if (syncInterval) clearInterval(syncInterval);
@@ -2308,11 +2445,12 @@ export default function App() {
               pattern="[0-9]*"
               maxLength={5}
               value={loginId}
+              disabled={!isOnline}
               onChange={(e) => {
                 setLoginId(e.target.value.replace(/[^0-9]/g, ''));
                 setLoginIdError('');
               }}
-              className={`bg-white/5 border ${loginIdError ? 'border-red-500' : 'border-white/20'} rounded-xl py-3 px-4 text-center text-2xl tracking-[0.5em] text-white focus:outline-none focus:border-white transition-colors placeholder:text-gray-700 font-mono`}
+              className={`bg-white/5 border ${loginIdError ? 'border-red-500' : 'border-white/20'} rounded-xl py-3 px-4 text-center text-2xl tracking-[0.5em] text-white focus:outline-none focus:border-white transition-colors placeholder:text-gray-700 font-mono disabled:opacity-50 disabled:cursor-not-allowed`}
               placeholder="•••••"
               dir="ltr"
             />
@@ -2328,6 +2466,7 @@ export default function App() {
                 pattern="[0-9]*"
                 maxLength={5}
                 value={showLoginPassword ? loginPassword : loginPassword.replace(/./g, '•')}
+                disabled={!isOnline}
                 onChange={(e) => {
                   setLoginPasswordError('');
                   if (showLoginPassword) {
@@ -2346,14 +2485,15 @@ export default function App() {
                     setLoginPassword(next.slice(0, 5));
                   }
                 }}
-                className={`w-full bg-white/5 border ${loginPasswordError ? 'border-red-500' : 'border-white/20'} rounded-xl py-3 px-4 text-center text-2xl tracking-[0.5em] text-white focus:outline-none focus:border-white transition-colors placeholder:text-gray-700 font-mono`}
+                className={`w-full bg-white/5 border ${loginPasswordError ? 'border-red-500' : 'border-white/20'} rounded-xl py-3 px-4 text-center text-2xl tracking-[0.5em] text-white focus:outline-none focus:border-white transition-colors placeholder:text-gray-700 font-mono disabled:opacity-50 disabled:cursor-not-allowed`}
                 placeholder="•••••"
                 dir="ltr"
               />
               <button
                 type="button"
+                disabled={!isOnline}
                 onClick={() => setShowLoginPassword(!showLoginPassword)}
-                className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white transition-colors cursor-pointer"
+                className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
               >
                 {showLoginPassword ? <Eye size={20} /> : <EyeOff size={20} />}
               </button>
@@ -2451,108 +2591,117 @@ export default function App() {
                   {t('accessDeniedOwner', displayLang)}
                 </div>
               ) : (
-              <button 
-                onClick={() => {
-                  if (isLoggingIn || loginLockoutTimer > 0) return;
-                  if (localStorage.getItem(`device_banned_${loginId}`) === 'true') return;
-                  setIsLoggingIn(true);
-                  setLoginIdError('');
-                  setLoginPasswordError('');
-                  
-                  (async () => {
-                    // Run login check
-                    let result = await loginUser(loginId, loginPassword);
-                    
-                    // If login is valid, and we haven't synced texts during a remote login fallback, sync texts now!
-                    if (result.isValid && !result.syncedTexts) {
-                       const syncRes = await syncTextsFromRemoteDB(loginId, loginPassword);
-                       if (syncRes && syncRes.passwordMismatch) {
-                         result = { isValid: false, error: 'wrongPassword' };
-                         // Wipe the stale local db entry
-                         initLocalDB().then(db => {
-                            const tx = db.transaction('users', 'readwrite');
-                            tx.objectStore('users').delete(loginId);
-                         }).catch(() => {});
-                       }
-                    }
-                    
-                    setIsLoggingIn(false);
-                    
-                    if (result.isValid) {
-                      localStorage.removeItem(`login_attempts_${loginId}`);
-                      localStorage.removeItem(`login_lockout_${loginId}`);
-                      setCurrentUserId(loginId);
-                      setCurrentPassword(loginPassword);
-                      saveSession(loginId, loginPassword);
-                      setCurrentView('dashboard');
-                    } else {
-                      if (result.error === 'idNotFound') {
-                        setLoginIdError(t('idNotFound', displayLang));
-                      } else if (result.error === 'wrongPassword') {
-                        const attemptsStr = localStorage.getItem(`login_attempts_${loginId}`);
-                        let attempts = attemptsStr ? parseInt(attemptsStr) : 0;
-                        attempts += 1;
-                        if (attempts >= 5) {
-                          const expiry = Date.now() + 300000;
-                          localStorage.setItem(`login_lockout_${loginId}`, expiry.toString());
-                          localStorage.setItem(`login_attempts_${loginId}`, "0");
-                          setLoginLockoutTimer(300);
-                          setLoginPasswordError(t('temporarilyBlocked', displayLang));
+                <>
+                  {!isOnline ? (
+                    <div className="w-full text-center text-red-500 font-bold text-base py-3.5 px-6 bg-red-500/10 rounded-xl border border-red-500/20 shadow-[0_0_15px_rgba(239,68,68,0.2)] flex items-center justify-center gap-2 select-none" dir="ltr">
+                      <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                      <span>No internet connection</span>
+                    </div>
+                  ) : (
+                    <button 
+                      onClick={() => {
+                        if (isLoggingIn || loginLockoutTimer > 0) return;
+                        if (localStorage.getItem(`device_banned_${loginId}`) === 'true') return;
+                        setIsLoggingIn(true);
+                        setLoginIdError('');
+                        setLoginPasswordError('');
+                        
+                        (async () => {
+                          // Run login check
+                          let result = await loginUser(loginId, loginPassword);
                           
-                          const attemptId = Date.now().toString() + Math.random().toString().slice(2, 8);
-                          localStorage.setItem(`lockout_attemptid_${loginId}`, attemptId);
+                          // If login is valid, and we haven't synced texts during a remote login fallback, sync texts now!
+                          if (result.isValid && !result.syncedTexts) {
+                             const syncRes = await syncTextsFromRemoteDB(loginId, loginPassword);
+                             if (syncRes && syncRes.passwordMismatch) {
+                               result = { isValid: false, error: 'wrongPassword' };
+                               // Wipe the stale local db entry
+                               initLocalDB().then(db => {
+                                  const tx = db.transaction('users', 'readwrite');
+                                  tx.objectStore('users').delete(loginId);
+                                }).catch(() => {});
+                             }
+                          }
                           
-                          appendToGoogleSheet({
-                            action: "ADD",
-                            id: `${loginId}_LOCKOUT`,
-                            userid: "USER_AUTH_LOCKOUT",
-                            text: expiry.toString(),
-                            timestamp: Date.now(),
-                            starred: 0
-                          }).catch(e => console.error(e));
+                          setIsLoggingIn(false);
                           
-                          const attemptData = {
-                               attemptId,
-                               device: navigator.platform || t('unknownDevice', displayLang),
-                               time: Date.now(),
-                               lockoutDuration: 300,
-                               action: 'PENDING'
-                          };
-                          appendToGoogleSheet({
-                            action: "ADD",
-                            id: `ATTEMPT_${loginId}_${attemptId}`,
-                            userid: "USER_AUTH_ATTEMPT",
-                            text: JSON.stringify(attemptData),
-                            timestamp: Date.now(),
-                            starred: 0
-                          }).catch(e => console.error(e));
-                          
-                          sendP2P(`app_owner_${loginId}`, { type: 'NEW_ATTEMPT', attempt: attemptData });
-                          
-                        } else {
-                          localStorage.setItem(`login_attempts_${loginId}`, attempts.toString());
-                          setLoginPasswordError(t('wrongPasswordAttempts', displayLang, 5 - attempts));
-                        }
-                      } else {
-                        setLoginIdError(t((result.error as any) || 'unknownError', displayLang) || t('unknownError', displayLang));
-                      }
-                    }
-                  })();
-                }}
-                disabled={loginId.length !== 5 || loginPassword.length !== 5 || isLoggingIn || loginLockoutTimer > 0}
-                className={`w-full font-medium py-3 px-8 rounded-full shadow-[0_0_15px_rgba(255,255,255,0.2)] transition-all tracking-wide ${loginId.length === 5 && loginPassword.length === 5 && !isLoggingIn && loginLockoutTimer === 0 ? 'bg-white hover:bg-gray-100 text-black cursor-pointer hover:scale-105 active:scale-95' : 'bg-transparent border border-gray-600 text-gray-500 cursor-not-allowed'} flex flex-col items-center justify-center min-h-[56px]`}
-              >
-                {isLoggingIn ? (
-                  <div className="flex flex-col items-center justify-center pt-1">
-                    <div className="w-5 h-5 border-2 border-gray-500 border-t-white rounded-full animate-spin"></div>
-                  </div>
-                ) : loginLockoutTimer > 0 ? (
-                  <span className="text-lg">{t('waitXSeconds', displayLang, loginLockoutTimer)}</span>
-                ) : (
-                  <span className="text-lg">{t('login', displayLang)}</span>
-                )}
-              </button>
-            )}
+                          if (result.isValid) {
+                            localStorage.removeItem(`login_attempts_${loginId}`);
+                            localStorage.removeItem(`login_lockout_${loginId}`);
+                            setCurrentUserId(loginId);
+                            setCurrentPassword(loginPassword);
+                            saveSession(loginId, loginPassword);
+                            setCurrentView('dashboard');
+                          } else {
+                            if (result.error === 'idNotFound') {
+                              setLoginIdError(t('idNotFound', displayLang));
+                            } else if (result.error === 'wrongPassword') {
+                              const attemptsStr = localStorage.getItem(`login_attempts_${loginId}`);
+                              let attempts = attemptsStr ? parseInt(attemptsStr) : 0;
+                              attempts += 1;
+                              if (attempts >= 5) {
+                                const expiry = Date.now() + 300000;
+                                localStorage.setItem(`login_lockout_${loginId}`, expiry.toString());
+                                localStorage.setItem(`login_attempts_${loginId}`, "0");
+                                setLoginLockoutTimer(300);
+                                setLoginPasswordError(t('temporarilyBlocked', displayLang));
+                                
+                                const attemptId = Date.now().toString() + Math.random().toString().slice(2, 8);
+                                localStorage.setItem(`lockout_attemptid_${loginId}`, attemptId);
+                                
+                                appendToGoogleSheet({
+                                  action: "ADD",
+                                  id: `${loginId}_LOCKOUT`,
+                                  userid: "USER_AUTH_LOCKOUT",
+                                  text: expiry.toString(),
+                                  timestamp: Date.now(),
+                                  starred: 0
+                                }).catch(e => console.error(e));
+                                
+                                const attemptData = {
+                                     attemptId,
+                                     device: navigator.platform || t('unknownDevice', displayLang),
+                                     time: Date.now(),
+                                     lockoutDuration: 300,
+                                     action: 'PENDING'
+                                };
+                                appendToGoogleSheet({
+                                  action: "ADD",
+                                  id: `ATTEMPT_${loginId}_${attemptId}`,
+                                  userid: "USER_AUTH_ATTEMPT",
+                                  text: JSON.stringify(attemptData),
+                                  timestamp: Date.now(),
+                                  starred: 0
+                                }).catch(e => console.error(e));
+                                
+                                sendP2P(`app_owner_${loginId}`, { type: 'NEW_ATTEMPT', attempt: attemptData });
+                                
+                              } else {
+                                localStorage.setItem(`login_attempts_${loginId}`, attempts.toString());
+                                setLoginPasswordError(t('wrongPasswordAttempts', displayLang, 5 - attempts));
+                              }
+                            } else {
+                              setLoginIdError(t((result.error as any) || 'unknownError', displayLang) || t('unknownError', displayLang));
+                            }
+                          }
+                        })();
+                      }}
+                      disabled={loginId.length !== 5 || loginPassword.length !== 5 || isLoggingIn || loginLockoutTimer > 0}
+                      className={`w-full font-medium py-3 px-8 rounded-full shadow-[0_0_15px_rgba(255,255,255,0.2)] transition-all tracking-wide ${loginId.length === 5 && loginPassword.length === 5 && !isLoggingIn && loginLockoutTimer === 0 ? 'bg-white hover:bg-gray-100 text-black cursor-pointer hover:scale-105 active:scale-95' : 'bg-transparent border border-gray-600 text-gray-500 cursor-not-allowed'} flex flex-col items-center justify-center min-h-[56px]`}
+                    >
+                      {isLoggingIn ? (
+                        <div className="flex flex-col items-center justify-center pt-1">
+                          <div className="w-5 h-5 border-2 border-gray-500 border-t-white rounded-full animate-spin"></div>
+                        </div>
+                      ) : loginLockoutTimer > 0 ? (
+                        <span className="text-lg">{t('waitXSeconds', displayLang, loginLockoutTimer)}</span>
+                      ) : (
+                        <span className="text-lg">{t('login', displayLang)}</span>
+                      )}
+                    </button>
+                  )}
+                </>
+              )}
 
             <button 
               onClick={() => setCurrentView('home')} 
