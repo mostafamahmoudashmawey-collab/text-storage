@@ -25,6 +25,35 @@ const fetchAllGoogleSheetRows = async (retryCount = 0): Promise<any[][]> => {
         throw new Error(`Failed to fetch Google Sheet: ${res.status} ${res.statusText}`);
     }
     const data: any[][] = await res.json();
+
+    // Automatically cache/update all registered User IDs on the device
+    try {
+      const ids = new Set<string>();
+      try {
+        const stored = localStorage.getItem('cached_registered_user_ids');
+        if (stored) {
+          const storedList = JSON.parse(stored);
+          if (Array.isArray(storedList)) {
+            storedList.forEach((id: string) => ids.add(String(id)));
+          }
+        }
+      } catch (err) {}
+      
+      data.forEach(row => {
+        if (row && row.length >= 2) {
+          const rowId = String(row[0]);
+          const rowUser = String(row[1]);
+          if (rowUser === "USER_AUTH" && rowId.length === 5) {
+            ids.add(rowId);
+          }
+        }
+      });
+      
+      localStorage.setItem('cached_registered_user_ids', JSON.stringify(Array.from(ids)));
+    } catch (err) {
+      console.error("Failed to extract and cache user IDs in fetchAllGoogleSheetRows", err);
+    }
+
     return data;
   } catch (error) {
     if (retryCount < 5) {
@@ -303,9 +332,9 @@ const getUnsyncedLocalTexts = async (userId: string): Promise<any[]> => {
   }
 };
 
-const syncPendingSignups = async () => {
+const syncPendingSignups = async (): Promise<number> => {
   const pendingStr = localStorage.getItem('pending_signups');
-  if (!pendingStr) return;
+  if (!pendingStr) return 0;
   try {
     const list = JSON.parse(pendingStr);
     if (Array.isArray(list) && list.length > 0) {
@@ -324,17 +353,31 @@ const syncPendingSignups = async () => {
           const filtered = updated.filter((u: any) => u.id !== item.id);
           localStorage.setItem('pending_signups', JSON.stringify(filtered));
         } catch (e) {
-          break;
+          console.error("Failed to sync a pending offline user", e);
+          break; // Stop immediately to preserve order
         }
       }
     }
+    const finalPendingStr = localStorage.getItem('pending_signups') || '[]';
+    const finalCount = JSON.parse(finalPendingStr);
+    return Array.isArray(finalCount) ? finalCount.length : 0;
   } catch (e) {
     console.error("Error syncing pending signups", e);
+    try {
+      const finalPendingStr = localStorage.getItem('pending_signups') || '[]';
+      return JSON.parse(finalPendingStr).length;
+    } catch (err) {
+      return 1;
+    }
   }
 };
 
 const syncAllPendingLocalChanges = async (userId: string) => {
-  await syncPendingSignups();
+  const remainingPendingUsers = await syncPendingSignups();
+  if (remainingPendingUsers > 0) {
+    console.log(`[Offline Sync] Skipping text/image sync because there are still ${remainingPendingUsers} pending user credentials to sync first.`);
+    return;
+  }
   try {
     const unsyncedItems = await getUnsyncedLocalTexts(userId);
     if (unsyncedItems.length === 0) return;
@@ -416,6 +459,28 @@ const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
   notifyTabSync(textItem.userId);
 
   try {
+    // Enforce that we sync user accounts FIRST before uploading texts or images
+    let hasPendingSignups = false;
+    try {
+      const pendingStr = localStorage.getItem('pending_signups');
+      if (pendingStr) {
+        const list = JSON.parse(pendingStr);
+        if (Array.isArray(list) && list.length > 0) {
+          hasPendingSignups = true;
+        }
+      }
+    } catch (e) {}
+
+    if (hasPendingSignups) {
+      console.log("[saveTextToDB] Syncing pending registrations before uploading text item...");
+      const remaining = await syncPendingSignups();
+      // If we still have pending user registrations, we DO NOT sync/upload the text/image yet
+      if (remaining > 0) {
+        console.warn("[saveTextToDB] Postponed direct text/image upload because user accounts are pending sync.");
+        return true;
+      }
+    }
+
     // Priority direct Upload for maximum speed and zero drops
     await appendToGoogleSheet({
       action: isUpdate ? "UPDATE" : "ADD",
@@ -726,6 +791,18 @@ const registerUser = async (id: string, pass: string) => {
     console.error("Local register error", e);
   }
 
+  // Update locally cached registered user IDs
+  try {
+    const stored = localStorage.getItem('cached_registered_user_ids') || '[]';
+    const storedList = JSON.parse(stored);
+    if (Array.isArray(storedList)) {
+      if (!storedList.includes(id)) {
+        storedList.push(id);
+        localStorage.setItem('cached_registered_user_ids', JSON.stringify(storedList));
+      }
+    }
+  } catch (e) {}
+
   try {
     await appendToGoogleSheet({
         action: "ADD",
@@ -949,6 +1026,15 @@ export default function App() {
   const [isOnline, setIsOnline] = useState(() => typeof navigator !== 'undefined' ? navigator.onLine : true);
 
   useEffect(() => {
+    const cacheAllUserIdsFromRemote = async () => {
+      try {
+        console.log("[Background Client] Fetching latest registered User IDs to refresh offline cache...");
+        await fetchAllGoogleSheetRows();
+      } catch (err) {
+        console.error("Background retrieval of registered user IDs failed:", err);
+      }
+    };
+
     const checkActualOnlineStatus = async () => {
       if (typeof navigator !== 'undefined' && !navigator.onLine) {
         setIsOnline(false);
@@ -961,6 +1047,8 @@ export default function App() {
         await fetch('https://script.google.com', { method: 'HEAD', mode: 'no-cors', signal: controller.signal });
         clearTimeout(timeoutId);
         setIsOnline(true);
+        // Automatically cache registered user IDs in background when online
+        cacheAllUserIdsFromRemote().catch(() => {});
       } catch (err) {
         setIsOnline(false);
       }
@@ -968,7 +1056,7 @@ export default function App() {
 
     // Run custom connectivity lookup immediately and then schedule the interval
     checkActualOnlineStatus();
-    const interval = setInterval(checkActualOnlineStatus, 5000);
+    const interval = setInterval(checkActualOnlineStatus, 30000);
 
     const handleOnline = () => {
       setIsOnline(true);
@@ -2110,6 +2198,54 @@ export default function App() {
   }, [currentView, currentUserId, currentPassword]);
 
   const generateUniqueId = async () => {
+    let cachedIds: string[] = [];
+    try {
+      const stored = localStorage.getItem('cached_registered_user_ids');
+      if (stored) {
+        cachedIds = JSON.parse(stored);
+      }
+    } catch (e) {}
+
+    // Check IndexedDB local users table as well to match any offline user IDs
+    try {
+      const localDb = await initLocalDB();
+      const localUsers: string[] = await new Promise((resolve) => {
+        const tx = localDb.transaction('users', 'readonly');
+        const store = tx.objectStore('users');
+        const req = store.getAllKeys();
+        req.onsuccess = () => resolve(req.result.map(String));
+        req.onerror = () => resolve([]);
+      });
+      localUsers.forEach(u => {
+        if (!cachedIds.includes(u)) {
+          cachedIds.push(u);
+        }
+      });
+    } catch (e) {}
+
+    // Also include pending offline signups so we don't collide with them!
+    try {
+      const pendingStr = localStorage.getItem('pending_signups');
+      if (pendingStr) {
+        const pendingList = JSON.parse(pendingStr);
+        if (Array.isArray(pendingList)) {
+          pendingList.forEach((u: any) => {
+            if (u && u.id && !cachedIds.includes(String(u.id))) {
+              cachedIds.push(String(u.id));
+            }
+          });
+        }
+      }
+    } catch (e) {}
+
+    let attemptsCount = 0;
+    while (attemptsCount < 1000) {
+      const id = Math.floor(10000 + Math.random() * 90000).toString();
+      if (!cachedIds.includes(id)) {
+        return id;
+      }
+      attemptsCount++;
+    }
     return Math.floor(10000 + Math.random() * 90000).toString();
   };
 
