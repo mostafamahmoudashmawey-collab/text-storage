@@ -320,6 +320,37 @@ const initLocalDB = (): Promise<IDBDatabase> => {
 };
 
 const TAB_ID = Math.random().toString(36).substring(2);
+
+const isIdLocked = (id: string): boolean => {
+  try {
+    const lockedStr = localStorage.getItem('inflight_locks') || '{}';
+    const locks = JSON.parse(lockedStr);
+    const lockTime = locks[id];
+    if (lockTime && Date.now() - Number(lockTime) < 15000) {
+      return true;
+    }
+  } catch (e) {}
+  return false;
+};
+
+const lockId = (id: string) => {
+  try {
+    const lockedStr = localStorage.getItem('inflight_locks') || '{}';
+    const locks = JSON.parse(lockedStr);
+    locks[id] = Date.now();
+    localStorage.setItem('inflight_locks', JSON.stringify(locks));
+  } catch (e) {}
+};
+
+const unlockId = (id: string) => {
+  try {
+    const lockedStr = localStorage.getItem('inflight_locks') || '{}';
+    const locks = JSON.parse(lockedStr);
+    delete locks[id];
+    localStorage.setItem('inflight_locks', JSON.stringify(locks));
+  } catch (e) {}
+};
+
 const getUnsyncedLocalTexts = async (userId: string): Promise<any[]> => {
   try {
     const localDb = await initLocalDB();
@@ -329,7 +360,7 @@ const getUnsyncedLocalTexts = async (userId: string): Promise<any[]> => {
       const index = store.index('userId');
       const req = index.getAll(userId);
       req.onsuccess = () => {
-        const items = req.result.filter((i: any) => i.synced === false && !inFlightSyncIds.has(i.id));
+        const items = req.result.filter((i: any) => i.synced === false && !inFlightSyncIds.has(i.id) && !isIdLocked(i.id));
         resolve(items);
       };
       req.onerror = () => reject(req.error);
@@ -530,10 +561,23 @@ const syncAllOfflineDataInStrictOrder = async (userId?: string): Promise<boolean
         console.log(`[Strict Order Sync] Processing ${unsyncedTexts.length} texts/images for user: ${userId}`);
         const localDb = await initLocalDB();
         for (const item of unsyncedTexts) {
-          if (inFlightSyncIds.has(item.id)) continue;
+          if (inFlightSyncIds.has(item.id) || isIdLocked(item.id)) continue;
           inFlightSyncIds.add(item.id);
+          lockId(item.id);
           try {
             if (item.deleted) {
+              if (item.lastSyncedDeleted) {
+                await new Promise<void>((resolve, reject) => {
+                  const tx = localDb.transaction('texts', 'readwrite');
+                  const store = tx.objectStore('texts');
+                  const req = store.put({ ...item, synced: true });
+                  req.onsuccess = () => resolve();
+                  req.onerror = reject;
+                });
+                window.dispatchEvent(new CustomEvent('local_item_synced', { detail: item.id }));
+                continue;
+              }
+
               await appendToGoogleSheet({
                 action: "DELETE",
                 id: item.id,
@@ -542,7 +586,31 @@ const syncAllOfflineDataInStrictOrder = async (userId?: string): Promise<boolean
                 timestamp: item.timestamp || Date.now(),
                 starred: -1
               });
+
+              await new Promise<void>((resolve, reject) => {
+                const tx = localDb.transaction('texts', 'readwrite');
+                const store = tx.objectStore('texts');
+                const req = store.put({ ...item, synced: true, lastSyncedDeleted: true });
+                req.onsuccess = () => resolve();
+                req.onerror = reject;
+              });
             } else {
+              if (
+                item.lastSyncedText === item.text &&
+                item.lastSyncedStarred === (item.starred ? 1 : 0) &&
+                !item.lastSyncedDeleted
+              ) {
+                await new Promise<void>((resolve, reject) => {
+                  const tx = localDb.transaction('texts', 'readwrite');
+                  const store = tx.objectStore('texts');
+                  const req = store.put({ ...item, synced: true });
+                  req.onsuccess = () => resolve();
+                  req.onerror = reject;
+                });
+                window.dispatchEvent(new CustomEvent('local_item_synced', { detail: item.id }));
+                continue;
+              }
+
               await appendToGoogleSheet({
                 action: "ADD",
                 id: item.id,
@@ -551,15 +619,21 @@ const syncAllOfflineDataInStrictOrder = async (userId?: string): Promise<boolean
                 timestamp: item.timestamp,
                 starred: item.starred ? 1 : 0
               });
-            }
 
-            await new Promise<void>((resolve, reject) => {
-              const tx = localDb.transaction('texts', 'readwrite');
-              const store = tx.objectStore('texts');
-              const req = store.put({ ...item, synced: true });
-              req.onsuccess = () => resolve();
-              req.onerror = reject;
-            });
+              await new Promise<void>((resolve, reject) => {
+                const tx = localDb.transaction('texts', 'readwrite');
+                const store = tx.objectStore('texts');
+                const req = store.put({
+                  ...item,
+                  synced: true,
+                  lastSyncedText: item.text,
+                  lastSyncedStarred: item.starred ? 1 : 0,
+                  lastSyncedDeleted: false
+                });
+                req.onsuccess = () => resolve();
+                req.onerror = reject;
+              });
+            }
 
             window.dispatchEvent(new CustomEvent('local_item_synced', { detail: item.id }));
           } catch (err) {
@@ -567,6 +641,7 @@ const syncAllOfflineDataInStrictOrder = async (userId?: string): Promise<boolean
             return false;
           } finally {
             inFlightSyncIds.delete(item.id);
+            unlockId(item.id);
           }
         }
       }
@@ -593,7 +668,7 @@ const syncAllUnsyncedTextsGlobally = async () => {
       const store = tx.objectStore('texts');
       const req = store.getAll();
       req.onsuccess = () => {
-        const items = req.result.filter((i: any) => i.synced === false && !inFlightSyncIds.has(i.id));
+        const items = req.result.filter((i: any) => i.synced === false && !inFlightSyncIds.has(i.id) && !isIdLocked(i.id));
         resolve(items);
       };
       req.onerror = () => reject(req.error);
@@ -603,10 +678,23 @@ const syncAllUnsyncedTextsGlobally = async () => {
     console.log(`[Global Sync] Found ${unsyncedItems.length} unsynced items. Processing...`);
 
     for (const item of unsyncedItems) {
-      if (inFlightSyncIds.has(item.id)) continue;
+      if (inFlightSyncIds.has(item.id) || isIdLocked(item.id)) continue;
       inFlightSyncIds.add(item.id);
+      lockId(item.id);
       try {
         if (item.deleted) {
+          if (item.lastSyncedDeleted) {
+            await new Promise<void>((resolve, reject) => {
+              const tx = localDb.transaction('texts', 'readwrite');
+              const store = tx.objectStore('texts');
+              const req = store.put({ ...item, synced: true });
+              req.onsuccess = () => resolve();
+              req.onerror = reject;
+            });
+            window.dispatchEvent(new CustomEvent('local_item_synced', { detail: item.id }));
+            continue;
+          }
+
           await appendToGoogleSheet({
             action: "DELETE",
             id: item.id,
@@ -615,7 +703,31 @@ const syncAllUnsyncedTextsGlobally = async () => {
             timestamp: item.timestamp || Date.now(),
             starred: -1
           });
+
+          await new Promise<void>((resolve, reject) => {
+            const tx = localDb.transaction('texts', 'readwrite');
+            const store = tx.objectStore('texts');
+            const req = store.put({ ...item, synced: true, lastSyncedDeleted: true });
+            req.onsuccess = () => resolve();
+            req.onerror = reject;
+          });
         } else {
+          if (
+            item.lastSyncedText === item.text &&
+            item.lastSyncedStarred === (item.starred ? 1 : 0) &&
+            !item.lastSyncedDeleted
+          ) {
+            await new Promise<void>((resolve, reject) => {
+              const tx = localDb.transaction('texts', 'readwrite');
+              const store = tx.objectStore('texts');
+              const req = store.put({ ...item, synced: true });
+              req.onsuccess = () => resolve();
+              req.onerror = reject;
+            });
+            window.dispatchEvent(new CustomEvent('local_item_synced', { detail: item.id }));
+            continue;
+          }
+
           await appendToGoogleSheet({
             action: "ADD",
             id: item.id,
@@ -624,16 +736,21 @@ const syncAllUnsyncedTextsGlobally = async () => {
             timestamp: item.timestamp,
             starred: item.starred ? 1 : 0
           });
-        }
 
-        // Mark as synced locally
-        await new Promise<void>((resolve, reject) => {
-          const tx = localDb.transaction('texts', 'readwrite');
-          const store = tx.objectStore('texts');
-          const req = store.put({ ...item, synced: true });
-          req.onsuccess = () => resolve();
-          req.onerror = reject;
-        });
+          await new Promise<void>((resolve, reject) => {
+            const tx = localDb.transaction('texts', 'readwrite');
+            const store = tx.objectStore('texts');
+            const req = store.put({
+              ...item,
+              synced: true,
+              lastSyncedText: item.text,
+              lastSyncedStarred: item.starred ? 1 : 0,
+              lastSyncedDeleted: false
+            });
+            req.onsuccess = () => resolve();
+            req.onerror = reject;
+          });
+        }
 
         window.dispatchEvent(new CustomEvent('local_item_synced', { detail: item.id }));
       } catch (err) {
@@ -641,6 +758,7 @@ const syncAllUnsyncedTextsGlobally = async () => {
         break; // Stop loop on failure (likely lost background connectivity)
       } finally {
         inFlightSyncIds.delete(item.id);
+        unlockId(item.id);
       }
     }
   } catch (e) {
@@ -661,8 +779,9 @@ const notifyTabSync = (userId: string) => {
 };
 
 const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
-  if (inFlightSyncIds.has(textItem.id)) return true;
+  if (inFlightSyncIds.has(textItem.id) || isIdLocked(textItem.id)) return true;
   inFlightSyncIds.add(textItem.id);
+  lockId(textItem.id);
 
   lastLocalWriteTime = Date.now();
   
@@ -685,6 +804,42 @@ const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
   notifyTabSync(textItem.userId);
 
   try {
+    let isAlreadySynced = false;
+    try {
+      const localDb = await initLocalDB();
+      const dbItem = await new Promise<any>((resolve, reject) => {
+        const tx = localDb.transaction('texts', 'readonly');
+        const store = tx.objectStore('texts');
+        const req = store.get(textItem.id);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+      if (
+        dbItem &&
+        dbItem.lastSyncedText === textItem.text &&
+        dbItem.lastSyncedStarred === (textItem.starred ? 1 : 0) &&
+        !dbItem.lastSyncedDeleted
+      ) {
+        isAlreadySynced = true;
+      }
+    } catch (e) {}
+
+    if (isAlreadySynced) {
+      try {
+        const localDb = await initLocalDB();
+        await new Promise<void>((resolve, reject) => {
+          const tx = localDb.transaction('texts', 'readwrite');
+          const store = tx.objectStore('texts');
+          const req = store.put({ ...itemToSave, synced: true });
+          req.onsuccess = () => resolve();
+          req.onerror = reject;
+        });
+        window.dispatchEvent(new CustomEvent('local_item_synced', { detail: textItem.id }));
+        notifyTabSync(textItem.userId);
+      } catch (e) {}
+      return true;
+    }
+
     // Enforce that we sync user accounts, password updates, and security setups FIRST before uploading texts or images
     let hasPrecedingTasks = false;
     try {
@@ -726,7 +881,13 @@ const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
       await new Promise<void>((resolve, reject) => {
         const tx = localDb.transaction('texts', 'readwrite');
         const store = tx.objectStore('texts');
-        const req = store.put({ ...itemToSave, synced: true });
+        const req = store.put({
+          ...itemToSave,
+          synced: true,
+          lastSyncedText: textItem.text,
+          lastSyncedStarred: textItem.starred ? 1 : 0,
+          lastSyncedDeleted: false
+        });
         req.onsuccess = () => resolve();
         req.onerror = reject;
       });
@@ -740,6 +901,7 @@ const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
     console.error("Google Sheets save error", e);
   } finally {
     inFlightSyncIds.delete(textItem.id);
+    unlockId(textItem.id);
   }
   return true;
 };
@@ -819,8 +981,11 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string, s
                 text: String(row[2]),
                 timestamp: Number(row[3]),
                 starred: Number(row[4]) === 1,
-                synced: true
-            });
+                synced: true,
+                lastSyncedText: String(row[2]),
+                lastSyncedStarred: Number(row[4]) === 1 ? 1 : 0,
+                lastSyncedDeleted: false
+            } as any);
             deletedIds.delete(rowId);
         }
       }
@@ -905,7 +1070,12 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string, s
                      putCount++;
                      checkDone();
                  } else {
-                     const putReq = store.put(t);
+                     const putReq = store.put({
+                        ...t,
+                        lastSyncedText: t.text,
+                        lastSyncedStarred: t.starred ? 1 : 0,
+                        lastSyncedDeleted: false
+                     });
                      putReq.onsuccess = () => { putCount++; checkDone(); };
                      putReq.onerror = () => reject(putReq.error);
                  }
@@ -946,9 +1116,12 @@ const deleteTextsFromDB = async (ids: string[], userId?: string, isAll: boolean 
   
   if (isAll) {
     pendingDeletedIds.clear();
-    // We don't mark all as pending since local DB is cleared, but just in case
   } else {
-    ids.forEach(id => pendingDeletedIds.add(id));
+    ids.forEach(id => {
+      pendingDeletedIds.add(id);
+      inFlightSyncIds.add(id);
+      lockId(id);
+    });
   }
   
   try {
@@ -998,7 +1171,7 @@ const deleteTextsFromDB = async (ids: string[], userId?: string, isAll: boolean 
           req.onsuccess = () => {
             const items = req.result.filter((i: any) => i.userId === userId);
             items.forEach((item: any) => {
-              store.put({ ...item, deleted: true, synced: true });
+              store.put({ ...item, deleted: true, synced: true, lastSyncedDeleted: true });
             });
             resolve();
           };
@@ -1031,9 +1204,9 @@ const deleteTextsFromDB = async (ids: string[], userId?: string, isAll: boolean 
             getReq.onsuccess = () => {
               const item = getReq.result;
               if (item) {
-                store.put({ ...item, deleted: true, synced: true });
+                store.put({ ...item, deleted: true, synced: true, lastSyncedDeleted: true });
               } else {
-                store.put({ id, userId: userId || "", text: "", timestamp: Date.now(), deleted: true, synced: true });
+                store.put({ id, userId: userId || "", text: "", timestamp: Date.now(), deleted: true, synced: true, lastSyncedDeleted: true });
               }
               completedCount++;
               if (completedCount === ids.length) {
@@ -1052,6 +1225,13 @@ const deleteTextsFromDB = async (ids: string[], userId?: string, isAll: boolean 
     }
   } catch (e) {
     console.error("Google Sheets delete error", e);
+  } finally {
+    if (!isAll) {
+      ids.forEach(id => {
+        inFlightSyncIds.delete(id);
+        unlockId(id);
+      });
+    }
   }
   return true;
 };
@@ -2632,7 +2812,7 @@ export default function App() {
   };
 
   return (
-    <div className={`min-h-screen w-full bg-black relative flex flex-col items-center justify-center gap-4 text-white ${theme === 'light' ? 'light-mode' : ''}`} >
+    <div className={`min-h-screen w-full bg-black relative flex flex-col items-center text-white ${theme === 'light' ? 'light-mode' : ''}`} >
       <header className="absolute top-0 left-0 right-0 h-[72px] flex items-center justify-between px-4 sm:px-6 w-full z-40 pointer-events-none" dir="ltr">
         <div className="flex items-center justify-start gap-2.5 text-lg text-white font-sans pointer-events-auto cursor-pointer w-auto sm:w-[200px] flex-shrink-0 select-none" onClick={() => { if (currentUserId && currentView === 'dashboard') { return; } else if (currentUserId) { setCurrentView('dashboard'); } else { setCurrentView('home'); } }}>
           <img src="/logo.png" className="w-8 h-8 rounded-lg object-cover border border-white/10 shadow-[0_0_10px_rgba(255,255,255,0.1)] active:scale-95 transition-all" alt="Inter Storage Logo" />
@@ -2810,30 +2990,46 @@ export default function App() {
       )}
 
       {currentView === 'home' && (
-        <div className="flex flex-col items-center justify-center gap-6 max-w-sm px-6 text-center select-none animate-fadeIn">
-          <div className="flex flex-col items-center gap-4 mb-4">
-            <div className="relative">
-              <div className="absolute inset-0 bg-cyan-500/20 blur-2xl rounded-full" />
-              <img src="/logo.png" className="relative w-32 h-32 sm:w-36 sm:h-36 rounded-3xl object-cover shadow-[0_0_40px_rgba(34,211,238,0.25)] border border-cyan-500/30 hover:scale-105 duration-500 transition-transform cursor-pointer" alt="Inter Storage Logo" />
+        <div className="flex-1 flex flex-col items-center justify-between min-h-[calc(100vh-72px)] w-full max-w-sm px-6 text-center select-none pt-24 pb-8 animate-fadeIn">
+          <div className="my-auto flex flex-col items-center gap-6 w-full">
+            <div className="flex flex-col items-center gap-4 mb-4">
+              <div className="relative">
+                <div className="absolute inset-0 bg-cyan-500/20 blur-2xl rounded-full" />
+                <img src="/logo.png" className="relative w-32 h-32 sm:w-36 sm:h-36 rounded-3xl object-cover shadow-[0_0_40px_rgba(34,211,238,0.25)] border border-cyan-500/30 hover:scale-105 duration-500 transition-transform cursor-pointer" alt="Inter Storage Logo" />
+              </div>
+              <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-white mt-4 font-sans bg-clip-text text-transparent bg-gradient-to-b from-white to-gray-400">Inter Storage</h1>
+              <p className="text-gray-400 text-sm leading-relaxed max-w-[280px] mx-auto">
+                {displayLang === 'ar' ? "المنصة العالمية لحفظ وتخزين كافة النصوص والصور بأمان تام وسرعة فائقة." : "The global platform to save and store all texts and images securely and extremely fast."}
+              </p>
             </div>
-            <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-white mt-4 font-sans bg-clip-text text-transparent bg-gradient-to-b from-white to-gray-400">Inter Storage</h1>
-            <p className="text-gray-400 text-sm leading-relaxed max-w-[280px]">
-              {displayLang === 'ar' ? "المنصة العالمية لحفظ وتخزين كافة النصوص والصور بأمان تام وسرعة فائقة." : "The global platform to save and store all texts and images securely and extremely fast."}
+            <div className="flex flex-col gap-3.5 w-56 mx-auto mt-4">
+              <button onClick={() => { setLoginId(''); setLoginPassword(''); setCurrentView('login'); }} className="cursor-pointer w-full bg-transparent hover:bg-white/10 text-white font-medium py-3 px-8 rounded-xl border border-white/20 hover:border-white transition-all hover:scale-105 active:scale-95 text-lg tracking-wide">
+                {t('homeFirstButton', displayLang)}
+              </button>
+              <button onClick={handleGoToSignup} className="cursor-pointer w-full bg-white hover:bg-gray-100 text-black font-semibold py-3 px-8 rounded-xl shadow-[0_0_20px_rgba(255,255,255,0.15)] transition-all hover:scale-105 active:scale-95 text-lg tracking-wide">
+                {t('homeSecondButton', displayLang)}
+              </button>
+            </div>
+          </div>
+
+          <footer className="w-full text-center mt-12 pointer-events-none z-40">
+            <p className="text-white/60 text-xs sm:text-sm font-medium tracking-wide font-sans select-text pointer-events-auto whitespace-nowrap px-4">
+              Developed and founded by{' '}
+              <a 
+                href="https://mail.google.com/mail/?view=cm&fs=1&to=info@inter--storage.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-cyan-400 hover:text-cyan-300 underline decoration-cyan-500/50 underline-offset-4 cursor-pointer transition-colors duration-200"
+              >
+                info@inter--storage.com
+              </a>
             </p>
-          </div>
-          <div className="flex flex-col gap-3.5 w-56 mt-4">
-            <button onClick={() => { setLoginId(''); setLoginPassword(''); setCurrentView('login'); }} className="cursor-pointer w-full bg-transparent hover:bg-white/10 text-white font-medium py-3 px-8 rounded-xl border border-white/20 hover:border-white transition-all hover:scale-105 active:scale-95 text-lg tracking-wide">
-              {t('homeFirstButton', displayLang)}
-            </button>
-            <button onClick={handleGoToSignup} className="cursor-pointer w-full bg-white hover:bg-gray-100 text-black font-semibold py-3 px-8 rounded-xl shadow-[0_0_20px_rgba(255,255,255,0.15)] transition-all hover:scale-105 active:scale-95 text-lg tracking-wide">
-              {t('homeSecondButton', displayLang)}
-            </button>
-          </div>
+          </footer>
         </div>
       )}
 
       {currentView === 'signup' && (
-        <div className="flex flex-col items-center gap-8 w-full max-w-sm px-6 pt-24">
+        <div className="flex flex-col items-center gap-8 w-full max-w-sm px-6 pt-24 pb-12 my-auto">
           <div className="absolute top-[80px] text-xl font-light tracking-wide text-white text-center">{t('createAccount', displayLang)}</div>
           <div className="flex flex-col gap-3 w-full">
             <label className="text-gray-400 text-sm">{t('yourId', displayLang)} <span className="text-gray-500 text-xs">{t('autoGenerated', displayLang)}</span></label>
@@ -2920,7 +3116,7 @@ export default function App() {
       )}
 
       {currentView === 'login' && (
-        <div className="flex flex-col items-center gap-8 w-full max-w-sm px-6 pt-24">
+        <div className="flex flex-col items-center gap-8 w-full max-w-sm px-6 pt-24 pb-12 my-auto">
           <div className="absolute top-[80px] text-xl font-light tracking-wide text-white text-center">{t('loginTitle', displayLang)}</div>
           
           <div className="flex flex-col gap-3 w-full">
@@ -3200,7 +3396,7 @@ export default function App() {
       )}
 
       {currentView === 'dashboard' && texts.length === 0 && (
-        <div className="flex flex-row gap-6 items-center justify-center mt-12">
+        <div className="flex flex-row gap-6 items-center justify-center my-auto pt-24 pb-12">
           <button 
             onClick={() => { setShowAddTextPopup(true); setNewText(''); }}
             className="flex flex-col items-center justify-center gap-4 transition-all cursor-pointer group hover:scale-105 active:scale-95 outline-none bg-transparent border-none"
@@ -5138,22 +5334,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
         </div>
       )}
 
-      {/* Footer Text */}
-      {currentView === 'home' && (
-        <footer className="absolute bottom-6 left-0 right-0 text-center pointer-events-none z-40">
-          <p className="text-white/60 text-xs sm:text-sm font-medium tracking-wide font-sans select-text pointer-events-auto">
-            Developed and founded by{' '}
-            <a 
-              href="https://mail.google.com/mail/?view=cm&fs=1&to=info@inter--storage.com"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-cyan-400 hover:text-cyan-300 underline decoration-cyan-500/50 underline-offset-4 cursor-pointer transition-colors duration-200"
-            >
-              info@inter--storage.com
-            </a>
-          </p>
-        </footer>
-      )}
+
 
     </div>
   );
