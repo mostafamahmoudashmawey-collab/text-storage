@@ -156,6 +156,8 @@ export const translations = {
     shareViaDeviceApps: "Share via device apps",
     imageCopiedOpeningPlatform: "Image copied successfully! Opening platform to paste it.",
     textCopiedOpeningPlatform: "Text copied successfully! Opening platform to paste it.",
+    noInternetConnection: "No internet connection",
+    offlinePlaceholder: "Offline",
   },
   ar: {
     login: "تسجيل دخول",
@@ -314,6 +316,8 @@ export const translations = {
     shareViaDeviceApps: "مشاركة عبر تطبيقات الجهاز",
     imageCopiedOpeningPlatform: "تم نسخ الصورة بنجاح! يتم الآن فتح المنصة لتتمكن من لصقها.",
     textCopiedOpeningPlatform: "تم نسخ النص بنجاح! يتم الآن فتح المنصة لتتمكن من لصقه.",
+    noInternetConnection: "لا يوجد اتصال بالإنترنت",
+    offlinePlaceholder: "غير متصل",
   }
 };
 

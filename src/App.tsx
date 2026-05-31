@@ -949,8 +949,30 @@ export default function App() {
   const [isOnline, setIsOnline] = useState(() => typeof navigator !== 'undefined' ? navigator.onLine : true);
 
   useEffect(() => {
+    const checkActualOnlineStatus = async () => {
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        setIsOnline(false);
+        return;
+      }
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 4000);
+        // We ping script.google.com as it is our primary Sheets backend URL, ensuring actual external connectivity is verified
+        await fetch('https://script.google.com', { method: 'HEAD', mode: 'no-cors', signal: controller.signal });
+        clearTimeout(timeoutId);
+        setIsOnline(true);
+      } catch (err) {
+        setIsOnline(false);
+      }
+    };
+
+    // Run custom connectivity lookup immediately and then schedule the interval
+    checkActualOnlineStatus();
+    const interval = setInterval(checkActualOnlineStatus, 5000);
+
     const handleOnline = () => {
       setIsOnline(true);
+      checkActualOnlineStatus();
       // Trigger instant sync when coming online
       const savedUser = localStorage.getItem('session_userId');
       if (savedUser) {
@@ -963,6 +985,7 @@ export default function App() {
     window.addEventListener('offline', handleOffline);
 
     return () => {
+      clearInterval(interval);
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
@@ -2451,7 +2474,7 @@ export default function App() {
                 setLoginIdError('');
               }}
               className={`bg-white/5 border ${loginIdError ? 'border-red-500' : 'border-white/20'} rounded-xl py-3 px-4 text-center text-2xl tracking-[0.5em] text-white focus:outline-none focus:border-white transition-colors placeholder:text-gray-700 font-mono disabled:opacity-30 disabled:border-red-500/10 disabled:text-gray-500 disabled:cursor-not-allowed`}
-              placeholder={isOnline ? "•••••" : "Offline"}
+              placeholder={isOnline ? "•••••" : t('offlinePlaceholder', displayLang)}
               dir="ltr"
             />
             {loginIdError && <div className="text-red-500 text-sm text-center font-medium mt-1">{loginIdError}</div>}
@@ -2486,7 +2509,7 @@ export default function App() {
                   }
                 }}
                 className={`w-full bg-white/5 border ${loginPasswordError ? 'border-red-500' : 'border-white/20'} rounded-xl py-3 px-4 text-center text-2xl tracking-[0.5em] text-white focus:outline-none focus:border-white transition-colors placeholder:text-gray-700 font-mono disabled:opacity-30 disabled:border-red-500/10 disabled:text-gray-500 disabled:cursor-not-allowed`}
-                placeholder={isOnline ? "•••••" : "Offline"}
+                placeholder={isOnline ? "•••••" : t('offlinePlaceholder', displayLang)}
                 dir="ltr"
               />
               <button
@@ -2595,7 +2618,7 @@ export default function App() {
                   {!isOnline ? (
                     <div className="w-full text-center text-red-500 font-bold text-base py-3.5 px-6 bg-red-500/10 rounded-xl border border-red-500/20 shadow-[0_0_15px_rgba(239,68,68,0.2)] flex items-center justify-center gap-2 select-none" dir="ltr">
                       <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                      <span>No internet connection</span>
+                      <span>{t('noInternetConnection', displayLang)}</span>
                     </div>
                   ) : (
                     <button 
