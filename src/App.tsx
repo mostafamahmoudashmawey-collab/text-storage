@@ -1401,6 +1401,7 @@ export default function App() {
   const [showAndroidInstallModal, setShowAndroidInstallModal] = useState(false);
   const [isAndroidDevice, setIsAndroidDevice] = useState(false);
   const [isMobileDevice, setIsMobileDevice] = useState(false);
+  const [isLegacyOrTV, setIsLegacyOrTV] = useState(false);
   const [showManualInstructions, setShowManualInstructions] = useState(false);
   const [isAppInstalled, setIsAppInstalled] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -1413,10 +1414,16 @@ export default function App() {
 
    useEffect(() => {
     const ua = navigator.userAgent.toLowerCase();
-    const isAndroid = /android|adr/i.test(ua) || 
+    const isTV = /smart-tv|smarttv|googletv|appletv|firetv|tizen|webos|viera|bravia|hisense|netflix|xbox|playstation|hdmi|tv/i.test(ua);
+    const isOldChrome = /chrome\/[0-4]\d\./.test(ua);
+    const isOldSafari = /version\/[0-9]\./.test(ua) && /safari/i.test(ua);
+    const isLegacy = isTV || isOldChrome || isOldSafari || (typeof window !== 'undefined' && (window.navigator as any).standalone === undefined);
+    setIsLegacyOrTV(isLegacy);
+
+    const isAndroid = (/android|adr/i.test(ua) || 
                       (navigator.platform && /android/i.test(navigator.platform)) ||
-                      (/linux/i.test(navigator.platform) && navigator.maxTouchPoints > 0 && !/iphone|ipad|ipod/i.test(ua));
-    const isMobile = /iphone|ipad|ipod|android|blackberry|iemobile|opera mini/.test(ua) || isAndroid;
+                      (/linux/i.test(navigator.platform) && navigator.maxTouchPoints > 0 && !/iphone|ipad|ipod/i.test(ua))) && !isTV;
+    const isMobile = (/iphone|ipad|ipod|android|blackberry|iemobile|opera mini/.test(ua) || isAndroid) && !isTV;
     setIsAndroidDevice(isAndroid);
     setIsMobileDevice(isMobile);
 
@@ -2632,7 +2639,7 @@ export default function App() {
   };
 
   return (
-    <div className={`min-h-screen w-full bg-black relative flex flex-col items-center justify-center gap-4 text-white ${theme === 'light' ? 'light-mode' : ''}`} >
+    <div className={`min-h-screen w-full bg-black relative flex flex-col items-center justify-center gap-4 text-white ${theme === 'light' ? 'light-mode' : ''} ${isLegacyOrTV ? 'legacy-tv-view' : ''}`} >
       <header className="absolute top-0 left-0 right-0 h-[72px] flex items-center justify-between px-4 sm:px-6 w-full z-40 pointer-events-none" dir="ltr">
         <div className="flex items-center justify-start gap-2.5 text-lg text-white font-sans pointer-events-auto cursor-pointer w-auto sm:w-[200px] flex-shrink-0 select-none" onClick={() => { if (currentUserId && currentView === 'dashboard') { return; } else if (currentUserId) { setCurrentView('dashboard'); } else { setCurrentView('home'); } }}>
           <img src="/logo.png" className="w-8 h-8 rounded-lg object-cover border border-white/10 shadow-[0_0_10px_rgba(255,255,255,0.1)] active:scale-95 transition-all" alt="Inter Storage Logo" />

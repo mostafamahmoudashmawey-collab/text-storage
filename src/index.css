@@ -55,3 +55,165 @@
   filter: invert(1) hue-rotate(180deg);
 }
 
+/* Legacy TV Safe View stylesheet overrides */
+.legacy-tv-view {
+  display: block !important;
+  width: 100% !important;
+  height: auto !important;
+  min-height: 100vh !important;
+  background-color: #000000 !important;
+  color: #ffffff !important;
+  text-align: center !important;
+  overflow-y: auto !important;
+  padding: 85px 15px 40px 15px !important;
+  box-sizing: border-box !important;
+}
+
+.legacy-tv-view > div {
+  display: block !important;
+  width: 100% !important;
+  max-width: 480px !important;
+  margin: 0 auto !important;
+  padding: 0 !important;
+  position: static !important;
+}
+
+.legacy-tv-view .flex, 
+.legacy-tv-view .flex-col, 
+.legacy-tv-view .grid {
+  display: block !important;
+  width: 100% !important;
+}
+
+.legacy-tv-view header {
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  height: 72px !important;
+  display: block !important;
+  background: #000000 !important;
+  border-bottom: 1px solid #222222 !important;
+  text-align: left !important;
+  pointer-events: auto !important;
+}
+
+.legacy-tv-view header > div {
+  display: inline-block !important;
+  vertical-align: middle !important;
+  margin: 18px 15px !important;
+}
+
+.legacy-tv-view h1,
+.legacy-tv-view h2,
+.legacy-tv-view h3 {
+  color: #ffffff !important;
+  background: none !important;
+  -webkit-text-fill-color: initial !important;
+  font-size: 28px !important;
+  margin: 20px auto !important;
+  text-align: center !important;
+  float: none !important;
+}
+
+.legacy-tv-view p,
+.legacy-tv-view label {
+  color: #cccccc !important;
+  display: block !important;
+  text-align: center !important;
+  margin: 10px auto !important;
+  float: none !important;
+}
+
+.legacy-tv-view input {
+  display: block !important;
+  width: 250px !important;
+  margin: 15px auto !important;
+  padding: 12px 10px !important;
+  background-color: #111111 !important;
+  border: 2px solid #333333 !important;
+  color: #ffffff !important;
+  border-radius: 12px !important;
+  font-size: 18px !important;
+  text-align: center !important;
+  box-sizing: border-box !important;
+}
+
+.legacy-tv-view button {
+  display: block !important;
+  width: 250px !important;
+  margin: 14px auto !important;
+  padding: 14px 15px !important;
+  font-size: 16px !important;
+  font-weight: bold !important;
+  border-radius: 12px !important;
+  text-align: center !important;
+  box-sizing: border-box !important;
+  cursor: pointer !important;
+}
+
+.legacy-tv-view button.bg-white,
+.legacy-tv-view button:not(.bg-transparent):not(.text-red-500):not(.text-gray-400):not(.text-gray-500) {
+  background-color: #ffffff !important;
+  color: #000000 !important;
+  border: none !important;
+}
+
+.legacy-tv-view button.bg-transparent,
+.legacy-tv-view button.text-gray-400,
+.legacy-tv-view button.text-gray-500 {
+  background-color: transparent !important;
+  color: #cccccc !important;
+  border: 1px solid #333333 !important;
+}
+
+.legacy-tv-view button.text-red-500 {
+  background-color: #3b0a0a !important;
+  color: #ff5555 !important;
+  border: 1px solid #7f1d1d !important;
+}
+
+.legacy-tv-view .absolute.top-\[80px\] {
+  position: static !important;
+  margin: 15px auto 25px auto !important;
+  font-size: 20px !important;
+  display: block !important;
+  text-align: center !important;
+  transform: none !important;
+}
+
+.legacy-tv-view .relative {
+  position: relative !important;
+}
+
+/* Dashboard elements block stacks */
+.legacy-tv-view .absolute.inset-0.pt-\[140px\] {
+  position: static !important;
+  display: block !important;
+  width: 100% !important;
+  height: auto !important;
+  margin-top: 140px !important;
+  padding: 0 10px !important;
+  pointer-events: auto !important;
+  overflow: visible !important;
+}
+
+.legacy-tv-view .flex-1.w-full.pointer-events-auto {
+  display: block !important;
+  width: 100% !important;
+}
+
+.legacy-tv-view .grid.grid-cols-1.sm\:grid-cols-2 {
+  display: block !important;
+  width: 100% !important;
+}
+
+.legacy-tv-view .grid.grid-cols-1.sm\:grid-cols-2 > div {
+  width: 100% !important;
+  max-width: 500px !important;
+  margin: 15px auto !important;
+  display: block !important;
+  box-sizing: border-box !important;
+  position: relative !important;
+}
+
