@@ -2450,8 +2450,8 @@ export default function App() {
                 setLoginId(e.target.value.replace(/[^0-9]/g, ''));
                 setLoginIdError('');
               }}
-              className={`bg-white/5 border ${loginIdError ? 'border-red-500' : 'border-white/20'} rounded-xl py-3 px-4 text-center text-2xl tracking-[0.5em] text-white focus:outline-none focus:border-white transition-colors placeholder:text-gray-700 font-mono disabled:opacity-50 disabled:cursor-not-allowed`}
-              placeholder="•••••"
+              className={`bg-white/5 border ${loginIdError ? 'border-red-500' : 'border-white/20'} rounded-xl py-3 px-4 text-center text-2xl tracking-[0.5em] text-white focus:outline-none focus:border-white transition-colors placeholder:text-gray-700 font-mono disabled:opacity-30 disabled:border-red-500/10 disabled:text-gray-500 disabled:cursor-not-allowed`}
+              placeholder={isOnline ? "•••••" : "Offline"}
               dir="ltr"
             />
             {loginIdError && <div className="text-red-500 text-sm text-center font-medium mt-1">{loginIdError}</div>}
@@ -2485,15 +2485,15 @@ export default function App() {
                     setLoginPassword(next.slice(0, 5));
                   }
                 }}
-                className={`w-full bg-white/5 border ${loginPasswordError ? 'border-red-500' : 'border-white/20'} rounded-xl py-3 px-4 text-center text-2xl tracking-[0.5em] text-white focus:outline-none focus:border-white transition-colors placeholder:text-gray-700 font-mono disabled:opacity-50 disabled:cursor-not-allowed`}
-                placeholder="•••••"
+                className={`w-full bg-white/5 border ${loginPasswordError ? 'border-red-500' : 'border-white/20'} rounded-xl py-3 px-4 text-center text-2xl tracking-[0.5em] text-white focus:outline-none focus:border-white transition-colors placeholder:text-gray-700 font-mono disabled:opacity-30 disabled:border-red-500/10 disabled:text-gray-500 disabled:cursor-not-allowed`}
+                placeholder={isOnline ? "•••••" : "Offline"}
                 dir="ltr"
               />
               <button
                 type="button"
                 disabled={!isOnline}
                 onClick={() => setShowLoginPassword(!showLoginPassword)}
-                className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white transition-colors cursor-pointer disabled:opacity-10 disabled:cursor-not-allowed"
               >
                 {showLoginPassword ? <Eye size={20} /> : <EyeOff size={20} />}
               </button>
@@ -2571,8 +2571,8 @@ export default function App() {
                      setLoadedImagesCount(0);
                      setShowForgotPwdRecoveryModal(true);
                   }}
-                  disabled={loginLockoutTimer > 0 || isLoggingIn}
-                  className="w-full text-right pr-2 text-sm font-medium text-gray-400 hover:text-white transition-colors cursor-pointer mt-1"
+                  disabled={loginLockoutTimer > 0 || isLoggingIn || !isOnline}
+                  className="w-full text-right pr-2 text-sm font-medium text-gray-400 hover:text-white transition-colors cursor-pointer mt-1 disabled:opacity-20 disabled:cursor-not-allowed"
                   dir="ltr"
                 >
                   {t('forgotPasswordQuestion', displayLang)}
