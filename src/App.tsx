@@ -347,7 +347,8 @@ const syncPendingSignups = async (): Promise<number> => {
     const list = JSON.parse(pendingStr);
     if (Array.isArray(list) && list.length > 0) {
       console.log(`[Offline Sync] Syncing ${list.length} pending offline signups...`);
-      for (const item of list) {
+      const listCopy = [...list];
+      for (const item of listCopy) {
         try {
           await appendToGoogleSheet({
               action: "ADD",
@@ -357,8 +358,8 @@ const syncPendingSignups = async (): Promise<number> => {
               timestamp: Date.now(),
               starred: 0
           });
-          const updated = JSON.parse(localStorage.getItem('pending_signups') || '[]');
-          const filtered = updated.filter((u: any) => u.id !== item.id);
+          const currentList = JSON.parse(localStorage.getItem('pending_signups') || '[]');
+          const filtered = currentList.filter((u: any) => u.id !== item.id);
           localStorage.setItem('pending_signups', JSON.stringify(filtered));
         } catch (e) {
           console.error("Failed to sync a pending offline user", e);
@@ -380,66 +381,207 @@ const syncPendingSignups = async (): Promise<number> => {
   }
 };
 
-const syncAllPendingLocalChanges = async (userId: string) => {
-  const remainingPendingUsers = await syncPendingSignups();
-  if (remainingPendingUsers > 0) {
-    console.log(`[Offline Sync] Skipping text/image sync because there are still ${remainingPendingUsers} pending user credentials to sync first.`);
-    return;
-  }
+const syncPendingPasswordUpdates = async (): Promise<number> => {
+  const pendingStr = localStorage.getItem('pending_password_updates');
+  if (!pendingStr) return 0;
   try {
-    const unsyncedItems = await getUnsyncedLocalTexts(userId);
-    if (unsyncedItems.length === 0) return;
-    
-    console.log(`[Offline Sync] Retrying ${unsyncedItems.length} unsynced items...`);
-
-    for (const item of unsyncedItems) {
-      try {
-        if (item.deleted) {
+    const list = JSON.parse(pendingStr);
+    if (Array.isArray(list) && list.length > 0) {
+      console.log(`[Offline Sync] Syncing ${list.length} pending offline password updates...`);
+      const listCopy = [...list];
+      for (const item of listCopy) {
+        try {
           await appendToGoogleSheet({
-            action: "DELETE",
-            id: item.id,
-            userid: "DELETED",
-            text: "[[DELETED]]",
-            timestamp: item.timestamp || Date.now(),
-            starred: -1
+              action: "UPDATE",
+              id: item.id,
+              userid: "USER_AUTH",
+              text: item.password,
+              timestamp: item.timestamp || Date.now(),
+              starred: 0
           });
-        } else {
-          await appendToGoogleSheet({
-            action: "ADD",
-            id: item.id,
-            userid: item.userId,
-            text: item.text,
-            timestamp: item.timestamp,
-            starred: item.starred ? 1 : 0
-          });
+          const currentList = JSON.parse(localStorage.getItem('pending_password_updates') || '[]');
+          const filtered = currentList.filter((u: any) => u.id !== item.id);
+          localStorage.setItem('pending_password_updates', JSON.stringify(filtered));
+        } catch (e) {
+          console.error("Failed to sync a pending offline password update", e);
+          break; // Stop immediately to preserve order
         }
-        
-        const localDb = await initLocalDB();
-        await new Promise<void>((resolve, reject) => {
-          const tx = localDb.transaction('texts', 'readwrite');
-          const store = tx.objectStore('texts');
-          const req = store.put({ ...item, synced: true });
-          req.onsuccess = () => resolve();
-          req.onerror = reject;
-        });
-
-        window.dispatchEvent(new CustomEvent('local_item_synced', { detail: item.id }));
-      } catch (err) {
-        console.error(`Failed to sync item ${item.id}`, err);
-        break;
       }
     }
+    const finalPendingStr = localStorage.getItem('pending_password_updates') || '[]';
+    const finalCount = JSON.parse(finalPendingStr);
+    return Array.isArray(finalCount) ? finalCount.length : 0;
   } catch (e) {
-    console.error("Error in syncAllPendingLocalChanges", e);
+    console.error("Error syncing pending password updates", e);
+    try {
+      const finalPendingStr = localStorage.getItem('pending_password_updates') || '[]';
+      return JSON.parse(finalPendingStr).length;
+    } catch (err) {
+      return 1;
+    }
   }
 };
 
-const syncAllUnsyncedTextsGlobally = async () => {
-  const remainingPendingUsers = await syncPendingSignups();
-  if (remainingPendingUsers > 0) {
-    console.log(`[Global Sync] Skipping text/image sync because there are still ${remainingPendingUsers} pending user credentials to sync first.`);
-    return;
+const syncPendingSecuritySetups = async (): Promise<number> => {
+  const pendingStr = localStorage.getItem('pending_security_setups');
+  if (!pendingStr) return 0;
+  try {
+    const list = JSON.parse(pendingStr);
+    if (Array.isArray(list) && list.length > 0) {
+      console.log(`[Offline Sync] Syncing ${list.length} pending offline security setups...`);
+      const listCopy = [...list];
+      for (const item of listCopy) {
+        try {
+          await appendToGoogleSheet({
+              action: "ADD",
+              id: `${item.id}_SECIMG`,
+              userid: "USER_AUTH_SECURITY",
+              text: JSON.stringify(item.payload),
+              timestamp: item.timestamp || Date.now(),
+              starred: 0
+          });
+          const currentList = JSON.parse(localStorage.getItem('pending_security_setups') || '[]');
+          const filtered = currentList.filter((u: any) => u.id !== item.id);
+          localStorage.setItem('pending_security_setups', JSON.stringify(filtered));
+        } catch (e) {
+          console.error("Failed to sync a pending offline security setup", e);
+          break; // Stop immediately to preserve order
+        }
+      }
+    }
+    const finalPendingStr = localStorage.getItem('pending_security_setups') || '[]';
+    const finalCount = JSON.parse(finalPendingStr);
+    return Array.isArray(finalCount) ? finalCount.length : 0;
+  } catch (e) {
+    console.error("Error syncing pending security setups", e);
+    try {
+      const finalPendingStr = localStorage.getItem('pending_security_setups') || '[]';
+      return JSON.parse(finalPendingStr).length;
+    } catch (err) {
+      return 1;
+    }
   }
+};
+
+const queueOrSendSecuritySetup = async (userId: string, payload: any) => {
+  try {
+    await appendToGoogleSheet({
+      action: "ADD",
+      id: `${userId}_SECIMG`,
+      userid: "USER_AUTH_SECURITY",
+      text: JSON.stringify(payload),
+      timestamp: Date.now(),
+      starred: 0
+    });
+    // Double clean any queue for this user on success
+    try {
+      const pendingStr = localStorage.getItem('pending_security_setups') || '[]';
+      const list = JSON.parse(pendingStr);
+      if (Array.isArray(list)) {
+        const filtered = list.filter((item: any) => item.id !== userId);
+        localStorage.setItem('pending_security_setups', JSON.stringify(filtered));
+      }
+    } catch (err) {}
+  } catch (e) {
+    console.warn("Failed to upload security setup directly, queuing offline...", e);
+    try {
+      const pendingStr = localStorage.getItem('pending_security_setups') || '[]';
+      const list = JSON.parse(pendingStr);
+      if (Array.isArray(list)) {
+        const idx = list.findIndex((item: any) => item.id === userId);
+        if (idx > -1) {
+          list[idx] = { id: userId, payload, timestamp: Date.now() };
+        } else {
+          list.push({ id: userId, payload, timestamp: Date.now() });
+        }
+        localStorage.setItem('pending_security_setups', JSON.stringify(list));
+      }
+    } catch (err) {}
+  }
+};
+
+const syncAllOfflineDataInStrictOrder = async (userId?: string): Promise<boolean> => {
+  try {
+    // 1. User registrations (Signups)
+    const signupsLeft = await syncPendingSignups();
+    if (signupsLeft > 0) {
+      console.log(`[Strict Order Sync] Halting next phases. ${signupsLeft} registrations still pending.`);
+      return false;
+    }
+
+    // 2. Password Updates (Pass changes)
+    const passwordsLeft = await syncPendingPasswordUpdates();
+    if (passwordsLeft > 0) {
+      console.log(`[Strict Order Sync] Halting next phases. ${passwordsLeft} password updates still pending.`);
+      return false;
+    }
+
+    // 3. Security setups (Forgot password images/keywords)
+    const securityLeft = await syncPendingSecuritySetups();
+    if (securityLeft > 0) {
+      console.log(`[Strict Order Sync] Halting next phases. ${securityLeft} security setups still pending.`);
+      return false;
+    }
+
+    // 4. Texts & Images
+    if (userId) {
+      const unsyncedTexts = await getUnsyncedLocalTexts(userId);
+      if (unsyncedTexts.length > 0) {
+        console.log(`[Strict Order Sync] Processing ${unsyncedTexts.length} texts/images for user: ${userId}`);
+        const localDb = await initLocalDB();
+        for (const item of unsyncedTexts) {
+          try {
+            if (item.deleted) {
+              await appendToGoogleSheet({
+                action: "DELETE",
+                id: item.id,
+                userid: "DELETED",
+                text: "[[DELETED]]",
+                timestamp: item.timestamp || Date.now(),
+                starred: -1
+              });
+            } else {
+              await appendToGoogleSheet({
+                action: "ADD",
+                id: item.id,
+                userid: item.userId,
+                text: item.text,
+                timestamp: item.timestamp,
+                starred: item.starred ? 1 : 0
+              });
+            }
+
+            await new Promise<void>((resolve, reject) => {
+              const tx = localDb.transaction('texts', 'readwrite');
+              const store = tx.objectStore('texts');
+              const req = store.put({ ...item, synced: true });
+              req.onsuccess = () => resolve();
+              req.onerror = reject;
+            });
+
+            window.dispatchEvent(new CustomEvent('local_item_synced', { detail: item.id }));
+          } catch (err) {
+            console.error("[Strict Order Sync] Error syncing text item", err);
+            return false;
+          }
+        }
+      }
+    }
+
+    // General flush for any outstanding unsynced texts
+    await syncAllUnsyncedTextsGlobally();
+    return true;
+  } catch (error) {
+    console.error("[Strict Order Sync] General sequential syncing failure", error);
+    return false;
+  }
+};
+
+const syncAllPendingLocalChanges = async (userId: string) => {
+  await syncAllOfflineDataInStrictOrder(userId);
+};
+
+const syncAllUnsyncedTextsGlobally = async () => {
   try {
     const localDb = await initLocalDB();
     const unsyncedItems: any[] = await new Promise((resolve, reject) => {
@@ -531,24 +673,27 @@ const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
   notifyTabSync(textItem.userId);
 
   try {
-    // Enforce that we sync user accounts FIRST before uploading texts or images
-    let hasPendingSignups = false;
+    // Enforce that we sync user accounts, password updates, and security setups FIRST before uploading texts or images
+    let hasPrecedingTasks = false;
     try {
-      const pendingStr = localStorage.getItem('pending_signups');
-      if (pendingStr) {
-        const list = JSON.parse(pendingStr);
-        if (Array.isArray(list) && list.length > 0) {
-          hasPendingSignups = true;
-        }
+      const pSign = localStorage.getItem('pending_signups');
+      const pPass = localStorage.getItem('pending_password_updates');
+      const pSec = localStorage.getItem('pending_security_setups');
+      if (
+        (pSign && JSON.parse(pSign).length > 0) ||
+        (pPass && JSON.parse(pPass).length > 0) ||
+        (pSec && JSON.parse(pSec).length > 0)
+      ) {
+        hasPrecedingTasks = true;
       }
     } catch (e) {}
 
-    if (hasPendingSignups) {
-      console.log("[saveTextToDB] Syncing pending registrations before uploading text item...");
-      const remaining = await syncPendingSignups();
-      // If we still have pending user registrations, we DO NOT sync/upload the text/image yet
-      if (remaining > 0) {
-        console.warn("[saveTextToDB] Postponed direct text/image upload because user accounts are pending sync.");
+    if (hasPrecedingTasks) {
+      console.log("[saveTextToDB] Syncing preceding credentials or security setups before uploading text item...");
+      const success = await syncAllOfflineDataInStrictOrder(textItem.userId);
+      // If we failed to clear earlier phases, we DO NOT direct sync/upload texts yet
+      if (!success) {
+        console.warn("[saveTextToDB] Postponed direct text/image upload because preceding tasks are pending sync.");
         return true;
       }
     }
@@ -1084,8 +1229,30 @@ const updatePasswordInDB = async (id: string, newPass: string) => {
         timestamp: Date.now(),
         starred: 0
     });
+    // Remove if it exists in pending
+    try {
+      const pendingStr = localStorage.getItem('pending_password_updates') || '[]';
+      const list = JSON.parse(pendingStr);
+      if (Array.isArray(list)) {
+        const filtered = list.filter((item: any) => item.id !== id);
+        localStorage.setItem('pending_password_updates', JSON.stringify(filtered));
+      }
+    } catch(err) {}
   } catch (e) {
-    console.error("Google Sheets update password error", e);
+    console.error("Google Sheets update password error, queuing offline...", e);
+    try {
+      const pendingStr = localStorage.getItem('pending_password_updates') || '[]';
+      const list = JSON.parse(pendingStr);
+      if (Array.isArray(list)) {
+        const index = list.findIndex((item: any) => item.id === id);
+        if (index > -1) {
+          list[index] = { id, password: newPass, timestamp: Date.now() };
+        } else {
+          list.push({ id, password: newPass, timestamp: Date.now() });
+        }
+        localStorage.setItem('pending_password_updates', JSON.stringify(list));
+      }
+    } catch (err) {}
   }
 };
 
@@ -3422,14 +3589,7 @@ export default function App() {
                             setShowUserIdPopup(false);
                           } else if (verifyAction === 'toggle_forgot_pwd') {
                             const newEnabledState = !isForgotPasswordEnabled;
-                            appendToGoogleSheet({
-                               action: "ADD",
-                               id: `${currentUserId}_SECIMG`,
-                               userid: "USER_AUTH_SECURITY",
-                               text: JSON.stringify({ enabled: newEnabledState, images: fpSetupImages.map(img => ({ originalDataUrl: img.dataUrl, keyword: img.keyword })) }),
-                               timestamp: Date.now(),
-                               starred: 0
-                            }).catch(() => {});
+                            queueOrSendSecuritySetup(currentUserId, { enabled: newEnabledState, images: fpSetupImages.map(img => ({ originalDataUrl: img.dataUrl || (img as any).originalDataUrl, keyword: img.keyword })) }).catch(() => {});
                             setIsForgotPasswordEnabled(newEnabledState);
                             localStorage.setItem(`fp_setup_${currentUserId}`, JSON.stringify({ enabled: newEnabledState, images: fpSetupImages }));
                           }
@@ -4545,14 +4705,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                       
                       if (fpSetupImages.length === 0) {
                          localStorage.removeItem(`fp_setup_${currentUserId}`);
-                         await appendToGoogleSheet({
-                           action: "ADD",
-                           id: `${currentUserId}_SECIMG`,
-                           userid: "USER_AUTH_SECURITY",
-                           text: JSON.stringify({ enabled: false, images: [] }),
-                           timestamp: Date.now(),
-                           starred: 0
-                         });
+                         await queueOrSendSecuritySetup(currentUserId, { enabled: false, images: [] });
                          setIsForgotPasswordEnabled(false);
                          setFpSetupLoading(false);
                          setShowForgotPasswordSetup(false);
@@ -4577,14 +4730,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                       
                       localStorage.setItem(`fp_setup_${currentUserId}`, JSON.stringify({ enabled: true, images: generatedSetup }));
   
-                      await appendToGoogleSheet({
-                        action: "ADD",
-                        id: `${currentUserId}_SECIMG`,
-                        userid: "USER_AUTH_SECURITY",
-                        text: JSON.stringify({ enabled: true, images: generatedSetup }),
-                        timestamp: Date.now(),
-                        starred: 0
-                      });
+                      await queueOrSendSecuritySetup(currentUserId, { enabled: true, images: generatedSetup });
   
                       setIsForgotPasswordEnabled(true);
                       setFpSetupLoading(false);
