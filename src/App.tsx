@@ -1792,6 +1792,15 @@ export default function App() {
      const container = notifScrollRef.current;
      if (!container) return;
 
+     if (typeof window === 'undefined' || !('IntersectionObserver' in window)) {
+        const elements = container.querySelectorAll('.notification-item');
+        elements.forEach(el => {
+           const id = el.getAttribute('data-attempt-id');
+           if (id) markNotifAsRead(id);
+        });
+        return;
+     }
+
      const observer = new IntersectionObserver((entries) => {
         entries.forEach(entry => {
            if (entry.isIntersecting) {
