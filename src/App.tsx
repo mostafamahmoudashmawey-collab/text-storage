@@ -329,7 +329,7 @@ const getUnsyncedLocalTexts = async (userId: string): Promise<any[]> => {
       const index = store.index('userId');
       const req = index.getAll(userId);
       req.onsuccess = () => {
-        const items = req.result.filter((i: any) => i.synced === false);
+        const items = req.result.filter((i: any) => i.synced === false && !inFlightSyncIds.has(i.id));
         resolve(items);
       };
       req.onerror = () => reject(req.error);
@@ -530,6 +530,8 @@ const syncAllOfflineDataInStrictOrder = async (userId?: string): Promise<boolean
         console.log(`[Strict Order Sync] Processing ${unsyncedTexts.length} texts/images for user: ${userId}`);
         const localDb = await initLocalDB();
         for (const item of unsyncedTexts) {
+          if (inFlightSyncIds.has(item.id)) continue;
+          inFlightSyncIds.add(item.id);
           try {
             if (item.deleted) {
               await appendToGoogleSheet({
@@ -563,6 +565,8 @@ const syncAllOfflineDataInStrictOrder = async (userId?: string): Promise<boolean
           } catch (err) {
             console.error("[Strict Order Sync] Error syncing text item", err);
             return false;
+          } finally {
+            inFlightSyncIds.delete(item.id);
           }
         }
       }
@@ -589,7 +593,7 @@ const syncAllUnsyncedTextsGlobally = async () => {
       const store = tx.objectStore('texts');
       const req = store.getAll();
       req.onsuccess = () => {
-        const items = req.result.filter((i: any) => i.synced === false);
+        const items = req.result.filter((i: any) => i.synced === false && !inFlightSyncIds.has(i.id));
         resolve(items);
       };
       req.onerror = () => reject(req.error);
@@ -599,6 +603,8 @@ const syncAllUnsyncedTextsGlobally = async () => {
     console.log(`[Global Sync] Found ${unsyncedItems.length} unsynced items. Processing...`);
 
     for (const item of unsyncedItems) {
+      if (inFlightSyncIds.has(item.id)) continue;
+      inFlightSyncIds.add(item.id);
       try {
         if (item.deleted) {
           await appendToGoogleSheet({
@@ -633,6 +639,8 @@ const syncAllUnsyncedTextsGlobally = async () => {
       } catch (err) {
         console.error(`[Global Sync] Failed to sync item ${item.id}`, err);
         break; // Stop loop on failure (likely lost background connectivity)
+      } finally {
+        inFlightSyncIds.delete(item.id);
       }
     }
   } catch (e) {
@@ -640,6 +648,7 @@ const syncAllUnsyncedTextsGlobally = async () => {
   }
 };
 
+const inFlightSyncIds = new Set<string>();
 let lastLocalWriteTime = 0;
 const pendingDeletedIds = new Set<string>();
 
@@ -652,6 +661,9 @@ const notifyTabSync = (userId: string) => {
 };
 
 const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
+  if (inFlightSyncIds.has(textItem.id)) return true;
+  inFlightSyncIds.add(textItem.id);
+
   lastLocalWriteTime = Date.now();
   
   // Save to local DB with synced = false so background loop can retry if needed
@@ -726,6 +738,8 @@ const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
 
   } catch (e) {
     console.error("Google Sheets save error", e);
+  } finally {
+    inFlightSyncIds.delete(textItem.id);
   }
   return true;
 };
@@ -973,6 +987,25 @@ const deleteTextsFromDB = async (ids: string[], userId?: string, isAll: boolean 
           timestamp: Date.now(),
           starred: -1
       });
+
+      // Mark all deleted items as synced: true in local DB so they are not synced again
+      try {
+        const localDb = await initLocalDB();
+        await new Promise<void>((resolve, reject) => {
+          const tx = localDb.transaction('texts', 'readwrite');
+          const store = tx.objectStore('texts');
+          const req = store.getAll();
+          req.onsuccess = () => {
+            const items = req.result.filter((i: any) => i.userId === userId);
+            items.forEach((item: any) => {
+              store.put({ ...item, deleted: true, synced: true });
+            });
+            resolve();
+          };
+          req.onerror = () => reject(req.error);
+        });
+      } catch (e) {}
+
     } else {
       // Parallel processing for maximum speed to Google Sheets
       await Promise.all(ids.map(id => 
@@ -985,6 +1018,37 @@ const deleteTextsFromDB = async (ids: string[], userId?: string, isAll: boolean 
              starred: -1
          })
       ));
+
+      // Mark specific deleted items as synced: true in local DB so they are not synced again
+      try {
+        const localDb = await initLocalDB();
+        await new Promise<void>((resolve, reject) => {
+          const tx = localDb.transaction('texts', 'readwrite');
+          const store = tx.objectStore('texts');
+          let completedCount = 0;
+          ids.forEach(id => {
+            const getReq = store.get(id);
+            getReq.onsuccess = () => {
+              const item = getReq.result;
+              if (item) {
+                store.put({ ...item, deleted: true, synced: true });
+              } else {
+                store.put({ id, userId: userId || "", text: "", timestamp: Date.now(), deleted: true, synced: true });
+              }
+              completedCount++;
+              if (completedCount === ids.length) {
+                resolve();
+              }
+            };
+            getReq.onerror = () => {
+              completedCount++;
+              if (completedCount === ids.length) {
+                resolve();
+              }
+            };
+          });
+        });
+      } catch (e) {}
     }
   } catch (e) {
     console.error("Google Sheets delete error", e);
