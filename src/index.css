@@ -11,53 +11,21 @@
   }
 }
 
-/* Global elegant custom scrollbar styles */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
-}
-
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  background-color: rgba(255, 255, 255, 0.15);
-  border-radius: 9999px;
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(34, 211, 238, 0.45); /* Elegant Cyan styling matching the app */
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
-
-::-webkit-scrollbar-corner {
-  background: transparent;
-}
-
 @layer utilities {
   .custom-scrollbar::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: 4px;
+    height: 4px;
   }
   .custom-scrollbar::-webkit-scrollbar-track {
     background: transparent;
-    margin: 4px;
+    margin: 8px;
   }
   .custom-scrollbar::-webkit-scrollbar-thumb {
     background-color: rgba(255, 255, 255, 0.2);
-    border-radius: 9999px;
+    border-radius: 10px;
   }
   .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-    background-color: rgba(34, 211, 238, 0.5);
+    background-color: rgba(255, 255, 255, 0.4);
   }
 
   @media (hover: hover) and (pointer: fine) {

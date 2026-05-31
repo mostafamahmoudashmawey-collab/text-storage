@@ -320,37 +320,6 @@ const initLocalDB = (): Promise<IDBDatabase> => {
 };
 
 const TAB_ID = Math.random().toString(36).substring(2);
-
-const isIdLocked = (id: string): boolean => {
-  try {
-    const lockedStr = localStorage.getItem('inflight_locks') || '{}';
-    const locks = JSON.parse(lockedStr);
-    const lockTime = locks[id];
-    if (lockTime && Date.now() - Number(lockTime) < 15000) {
-      return true;
-    }
-  } catch (e) {}
-  return false;
-};
-
-const lockId = (id: string) => {
-  try {
-    const lockedStr = localStorage.getItem('inflight_locks') || '{}';
-    const locks = JSON.parse(lockedStr);
-    locks[id] = Date.now();
-    localStorage.setItem('inflight_locks', JSON.stringify(locks));
-  } catch (e) {}
-};
-
-const unlockId = (id: string) => {
-  try {
-    const lockedStr = localStorage.getItem('inflight_locks') || '{}';
-    const locks = JSON.parse(lockedStr);
-    delete locks[id];
-    localStorage.setItem('inflight_locks', JSON.stringify(locks));
-  } catch (e) {}
-};
-
 const getUnsyncedLocalTexts = async (userId: string): Promise<any[]> => {
   try {
     const localDb = await initLocalDB();
@@ -360,7 +329,7 @@ const getUnsyncedLocalTexts = async (userId: string): Promise<any[]> => {
       const index = store.index('userId');
       const req = index.getAll(userId);
       req.onsuccess = () => {
-        const items = req.result.filter((i: any) => i.synced === false && !inFlightSyncIds.has(i.id) && !isIdLocked(i.id));
+        const items = req.result.filter((i: any) => i.synced === false);
         resolve(items);
       };
       req.onerror = () => reject(req.error);
@@ -561,29 +530,8 @@ const syncAllOfflineDataInStrictOrder = async (userId?: string): Promise<boolean
         console.log(`[Strict Order Sync] Processing ${unsyncedTexts.length} texts/images for user: ${userId}`);
         const localDb = await initLocalDB();
         for (const item of unsyncedTexts) {
-          if (inFlightSyncIds.has(item.id) || isIdLocked(item.id)) continue;
-          inFlightSyncIds.add(item.id);
-          lockId(item.id);
           try {
             if (item.deleted) {
-              if (item.lastSyncedDeleted) {
-                const freshItem = await new Promise<any>((res) => {
-                  const tx = localDb.transaction('texts', 'readonly');
-                  tx.objectStore('texts').get(item.id).onsuccess = (ev: any) => res(ev.target.result);
-                });
-                if (freshItem && freshItem.timestamp === item.timestamp) {
-                  await new Promise<void>((resolve, reject) => {
-                    const tx = localDb.transaction('texts', 'readwrite');
-                    const store = tx.objectStore('texts');
-                    const req = store.put({ ...item, synced: true });
-                    req.onsuccess = () => resolve();
-                    req.onerror = reject;
-                  });
-                  window.dispatchEvent(new CustomEvent('local_item_synced', { detail: item.id }));
-                }
-                continue;
-              }
-
               await appendToGoogleSheet({
                 action: "DELETE",
                 id: item.id,
@@ -592,44 +540,7 @@ const syncAllOfflineDataInStrictOrder = async (userId?: string): Promise<boolean
                 timestamp: item.timestamp || Date.now(),
                 starred: -1
               });
-
-              const freshItem = await new Promise<any>((res) => {
-                const tx = localDb.transaction('texts', 'readonly');
-                tx.objectStore('texts').get(item.id).onsuccess = (ev: any) => res(ev.target.result);
-              });
-
-              if (freshItem && freshItem.timestamp === item.timestamp) {
-                await new Promise<void>((resolve, reject) => {
-                  const tx = localDb.transaction('texts', 'readwrite');
-                  const store = tx.objectStore('texts');
-                  const req = store.put({ ...item, synced: true, lastSyncedDeleted: true });
-                  req.onsuccess = () => resolve();
-                  req.onerror = reject;
-                });
-              }
             } else {
-              if (
-                item.lastSyncedText === item.text &&
-                item.lastSyncedStarred === (item.starred ? 1 : 0) &&
-                !item.lastSyncedDeleted
-              ) {
-                const freshItem = await new Promise<any>((res) => {
-                  const tx = localDb.transaction('texts', 'readonly');
-                  tx.objectStore('texts').get(item.id).onsuccess = (ev: any) => res(ev.target.result);
-                });
-                if (freshItem && freshItem.timestamp === item.timestamp) {
-                  await new Promise<void>((resolve, reject) => {
-                    const tx = localDb.transaction('texts', 'readwrite');
-                    const store = tx.objectStore('texts');
-                    const req = store.put({ ...item, synced: true });
-                    req.onsuccess = () => resolve();
-                    req.onerror = reject;
-                  });
-                  window.dispatchEvent(new CustomEvent('local_item_synced', { detail: item.id }));
-                }
-                continue;
-              }
-
               await appendToGoogleSheet({
                 action: "ADD",
                 id: item.id,
@@ -638,36 +549,20 @@ const syncAllOfflineDataInStrictOrder = async (userId?: string): Promise<boolean
                 timestamp: item.timestamp,
                 starred: item.starred ? 1 : 0
               });
-
-              const freshItem = await new Promise<any>((res) => {
-                const tx = localDb.transaction('texts', 'readonly');
-                tx.objectStore('texts').get(item.id).onsuccess = (ev: any) => res(ev.target.result);
-              });
-
-              if (freshItem && freshItem.timestamp === item.timestamp && !freshItem.deleted) {
-                await new Promise<void>((resolve, reject) => {
-                  const tx = localDb.transaction('texts', 'readwrite');
-                  const store = tx.objectStore('texts');
-                  const req = store.put({
-                    ...freshItem,
-                    synced: true,
-                    lastSyncedText: item.text,
-                    lastSyncedStarred: item.starred ? 1 : 0,
-                    lastSyncedDeleted: false
-                  });
-                  req.onsuccess = () => resolve();
-                  req.onerror = reject;
-                });
-              }
             }
+
+            await new Promise<void>((resolve, reject) => {
+              const tx = localDb.transaction('texts', 'readwrite');
+              const store = tx.objectStore('texts');
+              const req = store.put({ ...item, synced: true });
+              req.onsuccess = () => resolve();
+              req.onerror = reject;
+            });
 
             window.dispatchEvent(new CustomEvent('local_item_synced', { detail: item.id }));
           } catch (err) {
             console.error("[Strict Order Sync] Error syncing text item", err);
             return false;
-          } finally {
-            inFlightSyncIds.delete(item.id);
-            unlockId(item.id);
           }
         }
       }
@@ -694,7 +589,7 @@ const syncAllUnsyncedTextsGlobally = async () => {
       const store = tx.objectStore('texts');
       const req = store.getAll();
       req.onsuccess = () => {
-        const items = req.result.filter((i: any) => i.synced === false && !inFlightSyncIds.has(i.id) && !isIdLocked(i.id));
+        const items = req.result.filter((i: any) => i.synced === false);
         resolve(items);
       };
       req.onerror = () => reject(req.error);
@@ -704,29 +599,8 @@ const syncAllUnsyncedTextsGlobally = async () => {
     console.log(`[Global Sync] Found ${unsyncedItems.length} unsynced items. Processing...`);
 
     for (const item of unsyncedItems) {
-      if (inFlightSyncIds.has(item.id) || isIdLocked(item.id)) continue;
-      inFlightSyncIds.add(item.id);
-      lockId(item.id);
       try {
         if (item.deleted) {
-          if (item.lastSyncedDeleted) {
-            const freshItem = await new Promise<any>((res) => {
-              const tx = localDb.transaction('texts', 'readonly');
-              tx.objectStore('texts').get(item.id).onsuccess = (ev: any) => res(ev.target.result);
-            });
-            if (freshItem && freshItem.timestamp === item.timestamp) {
-              await new Promise<void>((resolve, reject) => {
-                const tx = localDb.transaction('texts', 'readwrite');
-                const store = tx.objectStore('texts');
-                const req = store.put({ ...item, synced: true });
-                req.onsuccess = () => resolve();
-                req.onerror = reject;
-              });
-              window.dispatchEvent(new CustomEvent('local_item_synced', { detail: item.id }));
-            }
-            continue;
-          }
-
           await appendToGoogleSheet({
             action: "DELETE",
             id: item.id,
@@ -735,44 +609,7 @@ const syncAllUnsyncedTextsGlobally = async () => {
             timestamp: item.timestamp || Date.now(),
             starred: -1
           });
-
-          const freshItem = await new Promise<any>((res) => {
-            const tx = localDb.transaction('texts', 'readonly');
-            tx.objectStore('texts').get(item.id).onsuccess = (ev: any) => res(ev.target.result);
-          });
-
-          if (freshItem && freshItem.timestamp === item.timestamp) {
-            await new Promise<void>((resolve, reject) => {
-              const tx = localDb.transaction('texts', 'readwrite');
-              const store = tx.objectStore('texts');
-              const req = store.put({ ...item, synced: true, lastSyncedDeleted: true });
-              req.onsuccess = () => resolve();
-              req.onerror = reject;
-            });
-          }
         } else {
-          if (
-            item.lastSyncedText === item.text &&
-            item.lastSyncedStarred === (item.starred ? 1 : 0) &&
-            !item.lastSyncedDeleted
-          ) {
-            const freshItem = await new Promise<any>((res) => {
-              const tx = localDb.transaction('texts', 'readonly');
-              tx.objectStore('texts').get(item.id).onsuccess = (ev: any) => res(ev.target.result);
-            });
-            if (freshItem && freshItem.timestamp === item.timestamp) {
-              await new Promise<void>((resolve, reject) => {
-                const tx = localDb.transaction('texts', 'readwrite');
-                const store = tx.objectStore('texts');
-                const req = store.put({ ...item, synced: true });
-                req.onsuccess = () => resolve();
-                req.onerror = reject;
-              });
-              window.dispatchEvent(new CustomEvent('local_item_synced', { detail: item.id }));
-            }
-            continue;
-          }
-
           await appendToGoogleSheet({
             action: "ADD",
             id: item.id,
@@ -781,36 +618,21 @@ const syncAllUnsyncedTextsGlobally = async () => {
             timestamp: item.timestamp,
             starred: item.starred ? 1 : 0
           });
-
-          const freshItem = await new Promise<any>((res) => {
-            const tx = localDb.transaction('texts', 'readonly');
-            tx.objectStore('texts').get(item.id).onsuccess = (ev: any) => res(ev.target.result);
-          });
-
-          if (freshItem && freshItem.timestamp === item.timestamp && !freshItem.deleted) {
-            await new Promise<void>((resolve, reject) => {
-              const tx = localDb.transaction('texts', 'readwrite');
-              const store = tx.objectStore('texts');
-              const req = store.put({
-                ...freshItem,
-                synced: true,
-                lastSyncedText: item.text,
-                lastSyncedStarred: item.starred ? 1 : 0,
-                lastSyncedDeleted: false
-              });
-              req.onsuccess = () => resolve();
-              req.onerror = reject;
-            });
-          }
         }
+
+        // Mark as synced locally
+        await new Promise<void>((resolve, reject) => {
+          const tx = localDb.transaction('texts', 'readwrite');
+          const store = tx.objectStore('texts');
+          const req = store.put({ ...item, synced: true });
+          req.onsuccess = () => resolve();
+          req.onerror = reject;
+        });
 
         window.dispatchEvent(new CustomEvent('local_item_synced', { detail: item.id }));
       } catch (err) {
         console.error(`[Global Sync] Failed to sync item ${item.id}`, err);
         break; // Stop loop on failure (likely lost background connectivity)
-      } finally {
-        inFlightSyncIds.delete(item.id);
-        unlockId(item.id);
       }
     }
   } catch (e) {
@@ -818,7 +640,6 @@ const syncAllUnsyncedTextsGlobally = async () => {
   }
 };
 
-const inFlightSyncIds = new Set<string>();
 let lastLocalWriteTime = 0;
 const pendingDeletedIds = new Set<string>();
 
@@ -833,72 +654,25 @@ const notifyTabSync = (userId: string) => {
 const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
   lastLocalWriteTime = Date.now();
   
-  // 1. ALWAYS write the latest state to the local IndexedDB first so it is 100% saved on the user's device
+  // Save to local DB with synced = false so background loop can retry if needed
   const itemToSave = { ...textItem, synced: false };
+  
   try {
     const localDb = await initLocalDB();
-    await new Promise<void>((resolve, reject) => {
+    await new Promise((resolve, reject) => {
       const tx = localDb.transaction('texts', 'readwrite');
       const store = tx.objectStore('texts');
       const req = store.put(itemToSave);
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error);
+      req.onsuccess = resolve;
+      req.onerror = reject;
     });
   } catch (e) {
     console.error("Local save error", e);
   }
 
-  // Notify this tab with the new local changes
-  window.dispatchEvent(new CustomEvent('local_item_synced', { detail: textItem.id }));
   notifyTabSync(textItem.userId);
 
-  // 2. Lock check: If there's already an active upload for this item, return.
-  // The background sync loop OR the current ongoing upload will sync the latest changes when ready.
-  if (inFlightSyncIds.has(textItem.id) || isIdLocked(textItem.id)) {
-    return true;
-  }
-
-  // Lock the ID so no other process in this or another tab starts a parallel upload of this item
-  inFlightSyncIds.add(textItem.id);
-  lockId(textItem.id);
-
   try {
-    let isAlreadySynced = false;
-    try {
-      const localDb = await initLocalDB();
-      const dbItem = await new Promise<any>((resolve, reject) => {
-        const tx = localDb.transaction('texts', 'readonly');
-        const store = tx.objectStore('texts');
-        const req = store.get(textItem.id);
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error);
-      });
-      if (
-        dbItem &&
-        dbItem.lastSyncedText === textItem.text &&
-        dbItem.lastSyncedStarred === (textItem.starred ? 1 : 0) &&
-        !dbItem.lastSyncedDeleted
-      ) {
-        isAlreadySynced = true;
-      }
-    } catch (e) {}
-
-    if (isAlreadySynced) {
-      try {
-        const localDb = await initLocalDB();
-        await new Promise<void>((resolve, reject) => {
-          const tx = localDb.transaction('texts', 'readwrite');
-          const store = tx.objectStore('texts');
-          const req = store.put({ ...itemToSave, synced: true });
-          req.onsuccess = () => resolve();
-          req.onerror = reject;
-        });
-        window.dispatchEvent(new CustomEvent('local_item_synced', { detail: textItem.id }));
-        notifyTabSync(textItem.userId);
-      } catch (e) {}
-      return true;
-    }
-
     // Enforce that we sync user accounts, password updates, and security setups FIRST before uploading texts or images
     let hasPrecedingTasks = false;
     try {
@@ -934,46 +708,24 @@ const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
       starred: textItem.starred ? 1 : 0
     });
     
-    // 3. OPTIMISTIC CONCURRENCY: Check if user modified the item in local DB while the upload was active
+    // Mark as synced locally so the pending counter drops smoothly one by one
     try {
       const localDb = await initLocalDB();
-      const currentLocalItem = await new Promise<any>((resolve, reject) => {
-         const tx = localDb.transaction('texts', 'readonly');
-         const store = tx.objectStore('texts');
-         const req = store.get(textItem.id);
-         req.onsuccess = () => resolve(req.result);
-         req.onerror = () => reject(req.error);
+      await new Promise<void>((resolve, reject) => {
+        const tx = localDb.transaction('texts', 'readwrite');
+        const store = tx.objectStore('texts');
+        const req = store.put({ ...itemToSave, synced: true });
+        req.onsuccess = () => resolve();
+        req.onerror = reject;
       });
-
-      // ONLY set as synced if the timestamp of the local item still matches the uploaded task (i.e. no subsequent edits)
-      if (currentLocalItem && currentLocalItem.timestamp === textItem.timestamp && !currentLocalItem.deleted) {
-        await new Promise<void>((resolve, reject) => {
-          const tx = localDb.transaction('texts', 'readwrite');
-          const store = tx.objectStore('texts');
-          const req = store.put({
-            ...currentLocalItem,
-            synced: true,
-            lastSyncedText: textItem.text,
-            lastSyncedStarred: textItem.starred ? 1 : 0,
-            lastSyncedDeleted: false
-          });
-          req.onsuccess = () => resolve();
-          req.onerror = reject;
-        });
-        window.dispatchEvent(new CustomEvent('local_item_synced', { detail: textItem.id }));
-        notifyTabSync(textItem.userId);
-      } else {
-        console.log("[saveTextToDB] Postponed marking as synced because a newer edit was detected during upload.");
-      }
-    } catch (e) {
-      console.error(e);
-    }
+      // Notify this tab so it updates its texts state
+      window.dispatchEvent(new CustomEvent('local_item_synced', { detail: textItem.id }));
+      // And notify other tabs
+      notifyTabSync(textItem.userId);
+    } catch (e) {}
 
   } catch (e) {
     console.error("Google Sheets save error", e);
-  } finally {
-    inFlightSyncIds.delete(textItem.id);
-    unlockId(textItem.id);
   }
   return true;
 };
@@ -1053,11 +805,8 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string, s
                 text: String(row[2]),
                 timestamp: Number(row[3]),
                 starred: Number(row[4]) === 1,
-                synced: true,
-                lastSyncedText: String(row[2]),
-                lastSyncedStarred: Number(row[4]) === 1 ? 1 : 0,
-                lastSyncedDeleted: false
-            } as any);
+                synced: true
+            });
             deletedIds.delete(rowId);
         }
       }
@@ -1142,12 +891,7 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string, s
                      putCount++;
                      checkDone();
                  } else {
-                     const putReq = store.put({
-                        ...t,
-                        lastSyncedText: t.text,
-                        lastSyncedStarred: t.starred ? 1 : 0,
-                        lastSyncedDeleted: false
-                     });
+                     const putReq = store.put(t);
                      putReq.onsuccess = () => { putCount++; checkDone(); };
                      putReq.onerror = () => reject(putReq.error);
                  }
@@ -1188,12 +932,9 @@ const deleteTextsFromDB = async (ids: string[], userId?: string, isAll: boolean 
   
   if (isAll) {
     pendingDeletedIds.clear();
+    // We don't mark all as pending since local DB is cleared, but just in case
   } else {
-    ids.forEach(id => {
-      pendingDeletedIds.add(id);
-      inFlightSyncIds.add(id);
-      lockId(id);
-    });
+    ids.forEach(id => pendingDeletedIds.add(id));
   }
   
   try {
@@ -1232,25 +973,6 @@ const deleteTextsFromDB = async (ids: string[], userId?: string, isAll: boolean 
           timestamp: Date.now(),
           starred: -1
       });
-
-      // Mark all deleted items as synced: true in local DB so they are not synced again
-      try {
-        const localDb = await initLocalDB();
-        await new Promise<void>((resolve, reject) => {
-          const tx = localDb.transaction('texts', 'readwrite');
-          const store = tx.objectStore('texts');
-          const req = store.getAll();
-          req.onsuccess = () => {
-            const items = req.result.filter((i: any) => i.userId === userId);
-            items.forEach((item: any) => {
-              store.put({ ...item, deleted: true, synced: true, lastSyncedDeleted: true });
-            });
-            resolve();
-          };
-          req.onerror = () => reject(req.error);
-        });
-      } catch (e) {}
-
     } else {
       // Parallel processing for maximum speed to Google Sheets
       await Promise.all(ids.map(id => 
@@ -1263,47 +985,9 @@ const deleteTextsFromDB = async (ids: string[], userId?: string, isAll: boolean 
              starred: -1
          })
       ));
-
-      // Mark specific deleted items as synced: true in local DB so they are not synced again
-      try {
-        const localDb = await initLocalDB();
-        await new Promise<void>((resolve, reject) => {
-          const tx = localDb.transaction('texts', 'readwrite');
-          const store = tx.objectStore('texts');
-          let completedCount = 0;
-          ids.forEach(id => {
-            const getReq = store.get(id);
-            getReq.onsuccess = () => {
-              const item = getReq.result;
-              if (item) {
-                store.put({ ...item, deleted: true, synced: true, lastSyncedDeleted: true });
-              } else {
-                store.put({ id, userId: userId || "", text: "", timestamp: Date.now(), deleted: true, synced: true, lastSyncedDeleted: true });
-              }
-              completedCount++;
-              if (completedCount === ids.length) {
-                resolve();
-              }
-            };
-            getReq.onerror = () => {
-              completedCount++;
-              if (completedCount === ids.length) {
-                resolve();
-              }
-            };
-          });
-        });
-      } catch (e) {}
     }
   } catch (e) {
     console.error("Google Sheets delete error", e);
-  } finally {
-    if (!isAll) {
-      ids.forEach(id => {
-        inFlightSyncIds.delete(id);
-        unlockId(id);
-      });
-    }
   }
   return true;
 };
@@ -2108,15 +1792,6 @@ export default function App() {
      const container = notifScrollRef.current;
      if (!container) return;
 
-     if (typeof window === 'undefined' || !('IntersectionObserver' in window)) {
-        const elements = container.querySelectorAll('.notification-item');
-        elements.forEach(el => {
-           const id = el.getAttribute('data-attempt-id');
-           if (id) markNotifAsRead(id);
-        });
-        return;
-     }
-
      const observer = new IntersectionObserver((entries) => {
         entries.forEach(entry => {
            if (entry.isIntersecting) {
@@ -2884,7 +2559,7 @@ export default function App() {
   };
 
   return (
-    <div className={`min-h-screen w-full bg-black relative flex flex-col items-center text-white ${theme === 'light' ? 'light-mode' : ''}`} >
+    <div className={`min-h-screen w-full bg-black relative flex flex-col items-center justify-center gap-4 text-white ${theme === 'light' ? 'light-mode' : ''}`} >
       <header className="absolute top-0 left-0 right-0 h-[72px] flex items-center justify-between px-4 sm:px-6 w-full z-40 pointer-events-none" dir="ltr">
         <div className="flex items-center justify-start gap-2.5 text-lg text-white font-sans pointer-events-auto cursor-pointer w-auto sm:w-[200px] flex-shrink-0 select-none" onClick={() => { if (currentUserId && currentView === 'dashboard') { return; } else if (currentUserId) { setCurrentView('dashboard'); } else { setCurrentView('home'); } }}>
           <img src="/logo.png" className="w-8 h-8 rounded-lg object-cover border border-white/10 shadow-[0_0_10px_rgba(255,255,255,0.1)] active:scale-95 transition-all" alt="Inter Storage Logo" />
@@ -3062,46 +2737,30 @@ export default function App() {
       )}
 
       {currentView === 'home' && (
-        <div className="flex-1 flex flex-col items-center justify-between min-h-[calc(100vh-72px)] w-full max-w-sm px-6 text-center select-none pt-24 pb-8 animate-fadeIn">
-          <div className="my-auto flex flex-col items-center gap-6 w-full">
-            <div className="flex flex-col items-center gap-4 mb-4">
-              <div className="relative">
-                <div className="absolute inset-0 bg-cyan-500/20 blur-2xl rounded-full" />
-                <img src="/logo.png" className="relative w-32 h-32 sm:w-36 sm:h-36 rounded-3xl object-cover shadow-[0_0_40px_rgba(34,211,238,0.25)] border border-cyan-500/30 hover:scale-105 duration-500 transition-transform cursor-pointer" alt="Inter Storage Logo" />
-              </div>
-              <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-white mt-4 font-sans bg-clip-text text-transparent bg-gradient-to-b from-white to-gray-400">Inter Storage</h1>
-              <p className="text-gray-400 text-sm leading-relaxed max-w-[280px] mx-auto">
-                {displayLang === 'ar' ? "المنصة العالمية لحفظ وتخزين كافة النصوص والصور بأمان تام وسرعة فائقة." : "The global platform to save and store all texts and images securely and extremely fast."}
-              </p>
+        <div className="flex flex-col items-center justify-center gap-6 max-w-sm px-6 text-center select-none animate-fadeIn">
+          <div className="flex flex-col items-center gap-4 mb-4">
+            <div className="relative">
+              <div className="absolute inset-0 bg-cyan-500/20 blur-2xl rounded-full" />
+              <img src="/logo.png" className="relative w-32 h-32 sm:w-36 sm:h-36 rounded-3xl object-cover shadow-[0_0_40px_rgba(34,211,238,0.25)] border border-cyan-500/30 hover:scale-105 duration-500 transition-transform cursor-pointer" alt="Inter Storage Logo" />
             </div>
-            <div className="flex flex-col gap-3.5 w-56 mx-auto mt-4">
-              <button onClick={() => { setLoginId(''); setLoginPassword(''); setCurrentView('login'); }} className="cursor-pointer w-full bg-transparent hover:bg-white/10 text-white font-medium py-3 px-8 rounded-xl border border-white/20 hover:border-white transition-all hover:scale-105 active:scale-95 text-lg tracking-wide">
-                {t('homeFirstButton', displayLang)}
-              </button>
-              <button onClick={handleGoToSignup} className="cursor-pointer w-full bg-white hover:bg-gray-100 text-black font-semibold py-3 px-8 rounded-xl shadow-[0_0_20px_rgba(255,255,255,0.15)] transition-all hover:scale-105 active:scale-95 text-lg tracking-wide">
-                {t('homeSecondButton', displayLang)}
-              </button>
-            </div>
-          </div>
-
-          <footer className="w-full text-center mt-12 pointer-events-none z-40">
-            <p className="text-white/60 text-xs sm:text-sm font-medium tracking-wide font-sans select-text pointer-events-auto whitespace-nowrap px-4">
-              Developed and founded by{' '}
-              <a 
-                href="https://mail.google.com/mail/?view=cm&fs=1&to=info@inter--storage.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-cyan-400 hover:text-cyan-300 underline decoration-cyan-500/50 underline-offset-4 cursor-pointer transition-colors duration-200"
-              >
-                info@inter--storage.com
-              </a>
+            <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-white mt-4 font-sans bg-clip-text text-transparent bg-gradient-to-b from-white to-gray-400">Inter Storage</h1>
+            <p className="text-gray-400 text-sm leading-relaxed max-w-[280px]">
+              {displayLang === 'ar' ? "المنصة العالمية لحفظ وتخزين كافة النصوص والصور بأمان تام وسرعة فائقة." : "The global platform to save and store all texts and images securely and extremely fast."}
             </p>
-          </footer>
+          </div>
+          <div className="flex flex-col gap-3.5 w-56 mt-4">
+            <button onClick={() => { setLoginId(''); setLoginPassword(''); setCurrentView('login'); }} className="cursor-pointer w-full bg-transparent hover:bg-white/10 text-white font-medium py-3 px-8 rounded-xl border border-white/20 hover:border-white transition-all hover:scale-105 active:scale-95 text-lg tracking-wide">
+              {t('homeFirstButton', displayLang)}
+            </button>
+            <button onClick={handleGoToSignup} className="cursor-pointer w-full bg-white hover:bg-gray-100 text-black font-semibold py-3 px-8 rounded-xl shadow-[0_0_20px_rgba(255,255,255,0.15)] transition-all hover:scale-105 active:scale-95 text-lg tracking-wide">
+              {t('homeSecondButton', displayLang)}
+            </button>
+          </div>
         </div>
       )}
 
       {currentView === 'signup' && (
-        <div className="flex flex-col items-center gap-8 w-full max-w-sm px-6 pt-24 pb-12 my-auto">
+        <div className="flex flex-col items-center gap-8 w-full max-w-sm px-6 pt-24">
           <div className="absolute top-[80px] text-xl font-light tracking-wide text-white text-center">{t('createAccount', displayLang)}</div>
           <div className="flex flex-col gap-3 w-full">
             <label className="text-gray-400 text-sm">{t('yourId', displayLang)} <span className="text-gray-500 text-xs">{t('autoGenerated', displayLang)}</span></label>
@@ -3188,7 +2847,7 @@ export default function App() {
       )}
 
       {currentView === 'login' && (
-        <div className="flex flex-col items-center gap-8 w-full max-w-sm px-6 pt-24 pb-12 my-auto">
+        <div className="flex flex-col items-center gap-8 w-full max-w-sm px-6 pt-24">
           <div className="absolute top-[80px] text-xl font-light tracking-wide text-white text-center">{t('loginTitle', displayLang)}</div>
           
           <div className="flex flex-col gap-3 w-full">
@@ -3468,7 +3127,7 @@ export default function App() {
       )}
 
       {currentView === 'dashboard' && texts.length === 0 && (
-        <div className="flex flex-row gap-6 items-center justify-center my-auto pt-24 pb-12">
+        <div className="flex flex-row gap-6 items-center justify-center mt-12">
           <button 
             onClick={() => { setShowAddTextPopup(true); setNewText(''); }}
             className="flex flex-col items-center justify-center gap-4 transition-all cursor-pointer group hover:scale-105 active:scale-95 outline-none bg-transparent border-none"
@@ -4606,27 +4265,21 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
               <button 
                 onClick={() => {
                   if (!newText.trim()) return;
-                  const textToSave = newText.trim();
-                  
-                  // Immediately hide popup and reset inputs to prevent duplicate/double-click submission
-                  setShowAddTextPopup(false);
-                  stopRecordingUserAction();
-                  setNewText('');
                   
                   (async () => {
                     const MAX_LEN = 48000;
-                    if (textToSave.length <= MAX_LEN) {
+                    if (newText.trim().length <= MAX_LEN) {
                       const newItem: TextItem = {
                         id: generateTextId(),
                         userId: currentUserId,
-                        text: textToSave,
+                        text: newText.trim(),
                         timestamp: Date.now()
                       };
                       setTexts((prev) => [newItem, ...prev]);
                       // Save in background
                       saveTextToDB(newItem).catch(e => console.error(e));
                     } else {
-                      const fullText = textToSave;
+                      const fullText = newText.trim();
                       const numChunks = Math.ceil(fullText.length / MAX_LEN);
                       const newItems: TextItem[] = [];
                       const baseId = generateTextId();
@@ -4645,6 +4298,10 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                       // newItems have higher timestamp last, so we reverse to put newest at front
                       setTexts((prev) => [...newItems.reverse(), ...prev]);
                     }
+
+                    setShowAddTextPopup(false);
+                    stopRecordingUserAction();
+                    setNewText('');
                   })();
                 }}
                 disabled={!newText.trim()}
@@ -4739,20 +4396,13 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
               <button 
                 onClick={() => {
                   if (!editTextInput.trim()) return;
-                  const textToSave = editTextInput.trim();
-
-                  // Immediately hide popup and reset inputs to prevent duplicate/double-click submission
-                  setShowEditTextPopup(false);
-                  stopRecordingUserAction();
-                  setEditTextItem(null);
-                  setEditTextInput('');
 
                   (async () => {
                     const MAX_LEN = 48000;
-                    if (textToSave.length <= MAX_LEN) {
+                    if (editTextInput.trim().length <= MAX_LEN) {
                       const updatedItem: TextItem = {
                         ...editTextItem,
-                        text: textToSave
+                        text: editTextInput.trim()
                       };
                       
                       setTexts((prev) => prev.map(t => t.id === updatedItem.id ? updatedItem : t));
@@ -4762,7 +4412,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                       deleteTextsFromDB([editTextItem.id], currentUserId).catch(e => console.error(e));
                       setTexts((prev) => prev.filter(t => t.id !== editTextItem.id));
                       
-                      const fullText = textToSave;
+                      const fullText = editTextInput.trim();
                       const numChunks = Math.ceil(fullText.length / MAX_LEN);
                       const newItems: TextItem[] = [];
                       const baseId = editTextItem.id;
@@ -4781,6 +4431,11 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                       }
                       setTexts((prev) => [...newItems.reverse(), ...prev]);
                     }
+                    
+                    setShowEditTextPopup(false);
+                    stopRecordingUserAction();
+                    setEditTextItem(null);
+                    setEditTextInput('');
                   })();
                 }} 
                 disabled={!editTextInput.trim() || editTextInput.trim() === editTextItem.text}
@@ -5410,7 +5065,22 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
         </div>
       )}
 
-
+      {/* Footer Text */}
+      {currentView === 'home' && (
+        <footer className="absolute bottom-6 left-0 right-0 text-center pointer-events-none z-40">
+          <p className="text-white/60 text-xs sm:text-sm font-medium tracking-wide font-sans select-text pointer-events-auto">
+            Developed and founded by{' '}
+            <a 
+              href="https://mail.google.com/mail/?view=cm&fs=1&to=info@inter--storage.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-cyan-400 hover:text-cyan-300 underline decoration-cyan-500/50 underline-offset-4 cursor-pointer transition-colors duration-200"
+            >
+              info@inter--storage.com
+            </a>
+          </p>
+        </footer>
+      )}
 
     </div>
   );
