@@ -4606,21 +4606,27 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
               <button 
                 onClick={() => {
                   if (!newText.trim()) return;
+                  const textToSave = newText.trim();
+                  
+                  // Immediately hide popup and reset inputs to prevent duplicate/double-click submission
+                  setShowAddTextPopup(false);
+                  stopRecordingUserAction();
+                  setNewText('');
                   
                   (async () => {
                     const MAX_LEN = 48000;
-                    if (newText.trim().length <= MAX_LEN) {
+                    if (textToSave.length <= MAX_LEN) {
                       const newItem: TextItem = {
                         id: generateTextId(),
                         userId: currentUserId,
-                        text: newText.trim(),
+                        text: textToSave,
                         timestamp: Date.now()
                       };
                       setTexts((prev) => [newItem, ...prev]);
                       // Save in background
                       saveTextToDB(newItem).catch(e => console.error(e));
                     } else {
-                      const fullText = newText.trim();
+                      const fullText = textToSave;
                       const numChunks = Math.ceil(fullText.length / MAX_LEN);
                       const newItems: TextItem[] = [];
                       const baseId = generateTextId();
@@ -4639,10 +4645,6 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                       // newItems have higher timestamp last, so we reverse to put newest at front
                       setTexts((prev) => [...newItems.reverse(), ...prev]);
                     }
-
-                    setShowAddTextPopup(false);
-                    stopRecordingUserAction();
-                    setNewText('');
                   })();
                 }}
                 disabled={!newText.trim()}
@@ -4737,13 +4739,20 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
               <button 
                 onClick={() => {
                   if (!editTextInput.trim()) return;
+                  const textToSave = editTextInput.trim();
+
+                  // Immediately hide popup and reset inputs to prevent duplicate/double-click submission
+                  setShowEditTextPopup(false);
+                  stopRecordingUserAction();
+                  setEditTextItem(null);
+                  setEditTextInput('');
 
                   (async () => {
                     const MAX_LEN = 48000;
-                    if (editTextInput.trim().length <= MAX_LEN) {
+                    if (textToSave.length <= MAX_LEN) {
                       const updatedItem: TextItem = {
                         ...editTextItem,
-                        text: editTextInput.trim()
+                        text: textToSave
                       };
                       
                       setTexts((prev) => prev.map(t => t.id === updatedItem.id ? updatedItem : t));
@@ -4753,7 +4762,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                       deleteTextsFromDB([editTextItem.id], currentUserId).catch(e => console.error(e));
                       setTexts((prev) => prev.filter(t => t.id !== editTextItem.id));
                       
-                      const fullText = editTextInput.trim();
+                      const fullText = textToSave;
                       const numChunks = Math.ceil(fullText.length / MAX_LEN);
                       const newItems: TextItem[] = [];
                       const baseId = editTextItem.id;
@@ -4772,11 +4781,6 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                       }
                       setTexts((prev) => [...newItems.reverse(), ...prev]);
                     }
-                    
-                    setShowEditTextPopup(false);
-                    stopRecordingUserAction();
-                    setEditTextItem(null);
-                    setEditTextInput('');
                   })();
                 }} 
                 disabled={!editTextInput.trim() || editTextInput.trim() === editTextItem.text}
