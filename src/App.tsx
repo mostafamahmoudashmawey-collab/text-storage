@@ -51,9 +51,9 @@ const appendToGoogleSheet = async (payload: any, retryCount = 0): Promise<any> =
     });
     return {};
   } catch (error) {
-    if (retryCount < 20) {
+    if (retryCount < 2) {
       // Exponential backoff
-      await new Promise(r => setTimeout(r, Math.min(1000 * retryCount, 10000)));
+      await new Promise(r => setTimeout(r, Math.min(1500 * (retryCount + 1), 5000)));
       return appendToGoogleSheet(payload, retryCount + 1);
     }
     console.error("Google Sheets save error after retries", error);
@@ -285,6 +285,7 @@ const initLocalDB = (): Promise<IDBDatabase> => {
 const TAB_ID = Math.random().toString(36).substring(2);
 let lastLocalWriteTime = 0;
 const pendingDeletedIds = new Set<string>();
+const trackingActiveUploads = new Set<string>();
 
 const notifyTabSync = (userId: string) => {
   try {
@@ -295,6 +296,27 @@ const notifyTabSync = (userId: string) => {
 };
 
 const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
+  if (trackingActiveUploads.has(textItem.id)) {
+    return true;
+  }
+
+  if (!isUpdate) {
+    try {
+      const localDb = await initLocalDB();
+      const existing = await new Promise<any>((resolve, reject) => {
+        const tx = localDb.transaction('texts', 'readonly');
+        const store = tx.objectStore('texts');
+        const req = store.get(textItem.id);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = reject;
+      });
+      if (existing && existing.synced) {
+        return true;
+      }
+    } catch (e) {}
+  }
+
+  trackingActiveUploads.add(textItem.id);
   lastLocalWriteTime = Date.now();
   
   // Save to local DB with synced = false so background loop can retry if needed
@@ -344,6 +366,8 @@ const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
 
   } catch (e) {
     console.error("Google Sheets save error", e);
+  } finally {
+    trackingActiveUploads.delete(textItem.id);
   }
   return true;
 };
