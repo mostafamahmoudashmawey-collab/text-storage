@@ -30,31 +30,15 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
+  // Only handle GET requests and local/same-origin URLs to keep Google Sheet calls running transparently
   if (event.request.method !== 'GET') return;
   
   const url = new URL(event.request.url);
-  
-  // Cache same-origin requests so the SPA and chunks work fully offline
-  if (url.origin === self.location.origin) {
-    event.respondWith(
-      caches.match(event.request).then((cachedResponse) => {
-        const fetchPromise = fetch(event.request).then((networkResponse) => {
-          if (networkResponse && networkResponse.status === 200) {
-            const responseToCache = networkResponse.clone();
-            caches.open(CACHE_NAME).then((cache) => {
-              cache.put(event.request, responseToCache);
-            });
-          }
-          return networkResponse;
-        }).catch(() => {
-          // If offline and request is dynamic page navigation, serve html
-          if (event.request.mode === 'navigate') {
-            return caches.match('/index.html');
-          }
-        });
+  if (url.origin !== self.location.origin) return;
 
-        return cachedResponse || fetchPromise;
-      })
-    );
-  }
+  event.respondWith(
+    fetch(event.request).catch(() => {
+      return caches.match(event.request);
+    })
+  );
 });
