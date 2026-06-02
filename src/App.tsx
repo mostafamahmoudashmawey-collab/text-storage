@@ -1547,12 +1547,8 @@ export default function App() {
     }
 
     recordingTextRef.current = currentValue;
-
-    const recognition = new SpeechRecognition();
-    recognition.lang = 'ar-SA';
-    recognition.continuous = true;
-    recognition.interimResults = true; // Enable interim for word-by-word
-    recognition.maxAlternatives = 1;
+    isRecordingRef.current = true;
+    setIsRecording(true);
 
     const resetSilenceTimer = () => {
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
@@ -1561,67 +1557,83 @@ export default function App() {
       }, 5000);
     };
 
-    recognition.onstart = () => {
-      setIsRecording(true);
-      isRecordingRef.current = true;
-      resetSilenceTimer();
-    };
+    const runSession = (baseText: string) => {
+      if (!isRecordingRef.current) return;
 
-    recognition.onresult = (event: any) => {
-      resetSilenceTimer();
-      let interimData = '';
+      const recognition = new SpeechRecognition();
+      recognition.lang = 'ar-SA';
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.maxAlternatives = 1;
 
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        if (event.results[i].isFinal) {
-          const finalStr = event.results[i][0].transcript.trim();
-          if (finalStr) {
-            recordingTextRef.current += (recordingTextRef.current && !recordingTextRef.current.endsWith(' ') && !recordingTextRef.current.endsWith('\n') ? ' ' : '') + finalStr + ' ';
+      recognition.onstart = () => {
+        resetSilenceTimer();
+      };
+
+      recognition.onresult = (event: any) => {
+        resetSilenceTimer();
+        let finalSessionText = '';
+        let interimSessionText = '';
+
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            if (transcript.trim()) {
+              finalSessionText += (finalSessionText ? ' ' : '') + transcript.trim();
+            }
+          } else {
+            if (transcript.trim()) {
+              interimSessionText += (interimSessionText ? ' ' : '') + transcript.trim();
+            }
           }
-        } else {
-          interimData += event.results[i][0].transcript;
         }
-      }
 
-      const currentFinalText = recordingTextRef.current;
-      if (interimData) {
-         let base = currentFinalText;
-         if (base && !base.endsWith(' ') && !base.endsWith('\n') && !interimData.startsWith(' ')) {
-           base += ' ';
-         }
-         setter(base + interimData);
-      } else {
-         setter(currentFinalText);
-      }
-    };
+        const base = baseText.trim();
+        const finalPart = finalSessionText.trim();
+        const interimPart = interimSessionText.trim();
 
-    recognition.onerror = (event: any) => {
-      console.error('Speech recognition error', event.error);
-      if (event.error !== 'no-speech' && event.error !== 'aborted') {
+        let computedText = base;
+        if (finalPart) {
+          computedText += (computedText ? ' ' : '') + finalPart;
+        }
+        if (interimPart) {
+          computedText += (computedText ? ' ' : '') + interimPart;
+        }
+
+        recordingTextRef.current = computedText;
+        setter(computedText);
+      };
+
+      recognition.onerror = (event: any) => {
+        console.error('Speech recognition error in session', event.error);
+        if (event.error !== 'no-speech' && event.error !== 'aborted') {
+          stopRecordingUserAction();
+        }
+      };
+
+      recognition.onend = () => {
+        if (isRecordingRef.current) {
+          // Restart with a clean, brand new SpeechRecognition instance
+          setTimeout(() => {
+            if (isRecordingRef.current) {
+              runSession(recordingTextRef.current);
+            }
+          }, 100);
+        } else {
+          stopRecordingUserAction();
+        }
+      };
+
+      recognitionRef.current = recognition;
+      try {
+        recognition.start();
+      } catch (e) {
+        console.error(e);
         stopRecordingUserAction();
       }
     };
 
-    recognition.onend = () => {
-      // Re-enable microphone automatically
-      if (isRecordingRef.current && recognitionRef.current) {
-         try {
-           recognitionRef.current.start();
-           resetSilenceTimer();
-         } catch(e) {
-           stopRecordingUserAction();
-         }
-      } else {
-        stopRecordingUserAction();
-      }
-    };
-
-    recognitionRef.current = recognition;
-    try {
-      recognition.start();
-    } catch(e) {
-      console.error(e);
-      stopRecordingUserAction();
-    }
+    runSession(currentValue);
   };
 
   const sharePlatforms = [
