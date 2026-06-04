@@ -63,10 +63,38 @@ const appendToGoogleSheet = async (payload: any, retryCount = 0): Promise<any> =
 
 // Keep original image quality, but safely compress to fit Sheets length constraints beautifully!
 const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> => {
-  return new Promise((resolve) => {
+  return new Promise(async (resolve) => {
+    let workingFileOrUrl = fileOrDataUrl;
+    
+    // Convert HEIC/HEIF dynamically on the client-side
+    if (fileOrDataUrl instanceof File) {
+      const ext = fileOrDataUrl.name?.toLowerCase() || '';
+      if (ext.endsWith('.heic') || ext.endsWith('.heif') || fileOrDataUrl.type === 'image/heic' || fileOrUrlTypeIsHeic(fileOrDataUrl)) {
+        try {
+          // Dynamic import of heic2any
+          let h2a = (window as any).heic2any;
+          if (!h2a) {
+            const m = await import('heic2any');
+            h2a = m.default || m;
+            (window as any).heic2any = h2a;
+          }
+          if (h2a) {
+            const converted = await h2a({
+              blob: fileOrDataUrl,
+              toType: 'image/jpeg',
+              quality: 0.8
+            });
+            workingFileOrUrl = Array.isArray(converted) ? converted[0] : converted;
+          }
+        } catch (e) {
+          console.error("HEIC conversion failed:", e);
+        }
+      }
+    }
+
     const handleLoadedImage = (img: HTMLImageElement) => {
-      let maxDim = 600;
-      let quality = 0.75;
+      let maxDim = 1200; // Start with high resolution for supreme detail as requested
+      let quality = 0.95; // Start with premium quality
       
       const attemptCompress = (): string => {
         const canvas = document.createElement('canvas');
@@ -94,7 +122,7 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
         
         // Try WebP first for ultra efficiency, fall back to JPEG if needed
         let dataUrl = canvas.toDataURL('image/webp', quality);
-        if (dataUrl.length > 45000) {
+        if (dataUrl.length > 44000) {
           dataUrl = canvas.toDataURL('image/jpeg', quality);
         }
         return dataUrl;
@@ -102,13 +130,24 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
       
       let finalDataUrl = attemptCompress();
       
-      // If still too large, reduce dimension and quality on the fly (up to Google Sheet limits)
-      while (finalDataUrl.length > 45000 && (maxDim > 150 || quality > 0.1)) {
-        if (maxDim > 300) {
+      // Gradually adjust quality and dimensions step-by-step
+      // This maintains highest possible quality for the character limit
+      while (finalDataUrl.length > 44000 && (maxDim > 50 || quality > 0.05)) {
+        if (quality > 0.7) {
+          quality = Math.max(0.7, quality - 0.05);
+        } else if (maxDim > 800) {
           maxDim -= 100;
+        } else if (quality > 0.4) {
+          quality = Math.max(0.4, quality - 0.05);
+        } else if (maxDim > 300) {
+          maxDim -= 50;
+        } else if (quality > 0.1) {
+          quality = Math.max(0.1, quality - 0.05);
+        } else if (maxDim > 100) {
+          maxDim -= 25;
         } else {
-          quality = Math.max(0.1, quality - 0.15);
-          maxDim = Math.max(150, maxDim - 50);
+          quality = Math.max(0.05, quality - 0.02);
+          maxDim = Math.max(50, maxDim - 10);
         }
         finalDataUrl = attemptCompress();
       }
@@ -116,28 +155,33 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
       resolve(finalDataUrl);
     };
 
-    if (typeof fileOrDataUrl === 'string') {
+    if (typeof workingFileOrUrl === 'string') {
       const img = new Image();
       img.onload = () => handleLoadedImage(img);
       img.onerror = () => {
-        // Fallback: If image loading fails, return a truncated fallback
-        resolve(fileOrDataUrl.slice(0, 48000));
+        // Fallback: If image loading fails, return sliced string
+        resolve(workingFileOrUrl.slice(0, 44000));
       };
-      img.src = fileOrDataUrl;
+      img.src = workingFileOrUrl;
     } else {
       const reader = new FileReader();
       reader.onload = (e) => {
         const img = new Image();
         img.onload = () => handleLoadedImage(img);
         img.onerror = () => {
-          resolve((e.target?.result as string || '').slice(0, 48000));
+          resolve((e.target?.result as string || '').slice(0, 44000));
         };
         img.src = e.target?.result as string;
       };
       reader.onerror = () => resolve('');
-      reader.readAsDataURL(fileOrDataUrl);
+      reader.readAsDataURL(workingFileOrUrl as Blob || workingFileOrUrl);
     }
   });
+};
+
+// Simple utility to check file types
+const fileOrUrlTypeIsHeic = (file: File): boolean => {
+  return !!(file.type && (file.type.includes('heic') || file.type.includes('heif')));
 };
 
 const compressImage = (dataUrl: string): Promise<string> => {
@@ -2028,40 +2072,33 @@ export default function App() {
     if (targetFiles.length === 0) return;
 
     let processed = 0;
-    const batchSize = 10;
-    
-    const processBatch = () => {
-      const target = targetFiles.slice(processed, processed + batchSize);
-      if (target.length === 0) return;
 
-      Promise.all(target.map(file => {
-        return new Promise<string>((resolve) => {
-          const isImage = file.type.startsWith('image/') || 
-            /\.(jpg|jpeg|png|gif|webp|svg|heic|heif|tiff|bmp|jfif|ico)$/i.test(file.name);
-          if (!isImage) {
-            resolve('');
-            return;
+    const processNext = async () => {
+      if (processed >= targetFiles.length) return;
+      const file = targetFiles[processed];
+
+      const isImage = file.type.startsWith('image/') || 
+        /\.(jpg|jpeg|png|gif|webp|svg|heic|heif|tiff|bmp|jfif|ico)$/i.test(file.name);
+
+      if (isImage) {
+        try {
+          const compressed = await compressImageToSafeSize(file);
+          if (compressed) {
+            setImagePreviews(prev => [...prev, compressed]);
           }
-          const reader = new FileReader();
-          reader.readAsDataURL(file);
-          reader.onload = async (e) => {
-            const dataUrl = e.target?.result as string;
-            const compressed = await compressImage(dataUrl);
-            resolve(compressed);
-          };
-          reader.onerror = () => resolve('');
-        });
-      })).then(results => {
-        const validResults = results.filter(r => r !== '');
-        setImagePreviews(prev => [...prev, ...validResults]);
-        processed += batchSize;
-        if (processed < targetFiles.length) {
-          setTimeout(processBatch, 0);
+        } catch (e) {
+          console.error("Error compressing image during sequential attachment:", e);
         }
-      });
+      }
+
+      processed++;
+      if (processed < targetFiles.length) {
+        // Safe small delay to let UI render and keep memory usage stable
+        setTimeout(processNext, 60);
+      }
     };
 
-    processBatch();
+    processNext();
   };
 
   const handleGoToSignup = async () => {
