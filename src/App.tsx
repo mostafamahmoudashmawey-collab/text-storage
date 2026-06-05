@@ -2065,40 +2065,32 @@ export default function App() {
     return Math.random().toString(36).substring(2, 11) + Date.now().toString(36);
   };
 
-  const handleImageFiles = (files: File[]) => {
+  const handleImageFiles = async (files: File[]) => {
     // Max 3 images (100 for special user 22222)
     const maxLimit = currentUserId === '22222' ? 100 : 3;
     const targetFiles = files.slice(0, maxLimit - imagePreviews.length);
     if (targetFiles.length === 0) return;
 
-    let processed = 0;
-
-    const processNext = async () => {
-      if (processed >= targetFiles.length) return;
-      const file = targetFiles[processed];
-
+    // Process all images in parallel for ultra-fast instant UI loading
+    const promises = targetFiles.map(async (file) => {
       const isImage = file.type.startsWith('image/') || 
         /\.(jpg|jpeg|png|gif|webp|svg|heic|heif|tiff|bmp|jfif|ico)$/i.test(file.name);
 
       if (isImage) {
         try {
           const compressed = await compressImageToSafeSize(file);
-          if (compressed) {
-            setImagePreviews(prev => [...prev, compressed]);
-          }
+          return compressed;
         } catch (e) {
-          console.error("Error compressing image during sequential attachment:", e);
+          console.error("Error compressing image:", e);
+          return null;
         }
       }
+      return null;
+    });
 
-      processed++;
-      if (processed < targetFiles.length) {
-        // Safe small delay to let UI render and keep memory usage stable
-        setTimeout(processNext, 60);
-      }
-    };
-
-    processNext();
+    const results = await Promise.all(promises);
+    const validResults = results.filter((r): r is string => !!r);
+    setImagePreviews(prev => [...prev, ...validResults]);
   };
 
   const handleGoToSignup = async () => {
@@ -3747,18 +3739,18 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                   setShowAddImagePopup(false);
                   setImagePreviews([]);
                   
-                  // Parallel, super-fast individual uploads
-                  (async () => {
-                    await Promise.all(newItems.map(async (item) => {
-                      try {
-                        await saveTextToDB(item);
-                        // Mark as synced if successful
-                        setTexts(prev => prev.map(t => t.id === item.id ? { ...t, synced: true } : t));
-                      } catch (e) {
-                         console.error("Failed to upload image item", e);
-                      }
-                    }));
-                  })();
+                   // Sequential database uploads (one by one)
+                   (async () => {
+                     for (const item of newItems) {
+                       try {
+                         await saveTextToDB(item);
+                         // Mark as synced if successful
+                         setTexts(prev => prev.map(t => t.id === item.id ? { ...t, synced: true } : t));
+                       } catch (e) {
+                          console.error("Failed to upload image item sequentially", e);
+                       }
+                     }
+                   })();
                 }} 
                 id="add-all-btn"
                 disabled={imagePreviews.length === 0}
