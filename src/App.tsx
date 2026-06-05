@@ -68,6 +68,16 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
     
     // Convert HEIC/HEIF dynamically on the client-side
     if (fileOrDataUrl instanceof File) {
+      // 1. If physical size is extremely small (under ~32.5KB), do NOT compress at all! Just convert to base64 DataURL immediately.
+      // This is incredibly fast (0ms canvas operations) and preserves pristine 100% original quality
+      if (fileOrDataUrl.size <= 32500) {
+        const reader = new FileReader();
+        reader.onload = (e) => resolve(e.target?.result as string || '');
+        reader.onerror = () => resolve('');
+        reader.readAsDataURL(fileOrDataUrl);
+        return;
+      }
+
       const ext = fileOrDataUrl.name?.toLowerCase() || '';
       if (ext.endsWith('.heic') || ext.endsWith('.heif') || fileOrDataUrl.type === 'image/heic' || fileOrUrlTypeIsHeic(fileOrDataUrl)) {
         try {
@@ -93,12 +103,8 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
     }
 
     const handleLoadedImage = (img: HTMLImageElement) => {
-      // Helper function to compress with specific scale factor (0.0 to 1.0)
-      const compressWithT = (t: number): string => {
-        // We interpolate maxDim from 200 to 1250, and quality from 0.45 to 0.96
-        const maxDim = Math.round(200 + t * 1050);
-        const quality = 0.45 + t * 0.51;
-        
+      // High-performance direct compressor with specific parameters
+      const compressSinglePass = (maxDim: number, quality: number): string => {
         const canvas = document.createElement('canvas');
         let width = img.width;
         let height = img.height;
@@ -119,48 +125,43 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
         canvas.height = height;
         const ctx = canvas.getContext('2d');
         if (ctx) {
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = 'high';
           ctx.drawImage(img, 0, 0, width, height);
         }
         
-        // Try WebP first for ultra efficiency, fall back to JPEG if needed
+        // Render to WebP for maximum compression-to-quality ratio, or JPEG as fallback
         let dataUrl = canvas.toDataURL('image/webp', quality);
-        if (dataUrl.length > 44000) {
+        if (dataUrl.length > 44000 || !dataUrl.startsWith('data:image/webp')) {
           dataUrl = canvas.toDataURL('image/jpeg', quality);
         }
         return dataUrl;
       };
 
-      // Binary Search of active compression factor t
-      // 4 iterations are extremely fast and pinpoint the highest quality fitting under 44000 chars!
-      let finalDataUrl = compressWithT(1.0);
+      // Attempt 1: Supreme Quality (1000px max, 0.82 quality) - looks absolutely beautiful
+      let finalDataUrl = compressSinglePass(1000, 0.82);
       if (finalDataUrl.length <= 44000) {
         resolve(finalDataUrl);
         return;
       }
 
-      let low = 0.0;
-      let high = 1.0;
-      let bestT = 0.0;
-      let bestDataUrl = "";
-
-      for (let step = 0; step < 4; step++) {
-        const mid = (low + high) / 2;
-        const currentResult = compressWithT(mid);
-        if (currentResult.length <= 44000) {
-          bestT = mid;
-          bestDataUrl = currentResult;
-          low = mid; // Try searching higher values for more details
-        } else {
-          high = mid; // Result too large, search lower values
-        }
+      // Attempt 2: High Quality Fallback (750px max, 0.70 quality)
+      finalDataUrl = compressSinglePass(750, 0.70);
+      if (finalDataUrl.length <= 44000) {
+        resolve(finalDataUrl);
+        return;
       }
 
-      if (bestDataUrl) {
-        resolve(bestDataUrl);
-      } else {
-        // Fallback to lowest possible dimension if still too large or not resolved
-        resolve(compressWithT(0.0).slice(0, 44000));
+      // Attempt 3: Medium Quality Fallback (550px max, 0.55 quality)
+      finalDataUrl = compressSinglePass(550, 0.55);
+      if (finalDataUrl.length <= 44000) {
+        resolve(finalDataUrl);
+        return;
       }
+
+      // Attempt 4: Safe Low Fallback (400px max, 0.40 quality)
+      finalDataUrl = compressSinglePass(400, 0.40);
+      resolve(finalDataUrl.slice(0, 44000));
     };
 
     if (typeof workingFileOrUrl === 'string') {
