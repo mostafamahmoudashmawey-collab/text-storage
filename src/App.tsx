@@ -62,7 +62,7 @@ const appendToGoogleSheet = async (payload: any, retryCount = 0): Promise<any> =
 };
 
 // Keep original image quality, but safely compress to fit Sheets length constraints beautifully!
-const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> => {
+const compressImageToSafeSize = (fileOrDataUrl: File | string, maxLen = 44000): Promise<string> => {
   return new Promise(async (resolve) => {
     let workingFileOrUrl = fileOrDataUrl;
     
@@ -70,7 +70,7 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
     if (fileOrDataUrl instanceof File) {
       // 1. If physical size is extremely small (under ~32.5KB), do NOT compress at all! Just convert to base64 DataURL immediately.
       // This is incredibly fast (0ms canvas operations) and preserves pristine 100% original quality
-      if (fileOrDataUrl.size <= 32500) {
+      if (fileOrDataUrl.size <= 32500 && fileOrDataUrl.size <= maxLen) {
         const reader = new FileReader();
         reader.onload = (e) => resolve(e.target?.result as string || '');
         reader.onerror = () => resolve('');
@@ -132,7 +132,7 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
         
         // Render to WebP for maximum compression-to-quality ratio, or JPEG as fallback
         let dataUrl = canvas.toDataURL('image/webp', quality);
-        if (dataUrl.length > 44000 || !dataUrl.startsWith('data:image/webp')) {
+        if (dataUrl.length > maxLen || !dataUrl.startsWith('data:image/webp')) {
           dataUrl = canvas.toDataURL('image/jpeg', quality);
         }
         return dataUrl;
@@ -140,35 +140,35 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
 
       // Attempt 1: Premium High Resolution & Supreme Quality (1250px max, 0.90 quality) - absolute pristine crispness
       let finalDataUrl = compressSinglePass(1250, 0.90);
-      if (finalDataUrl.length <= 44000) {
+      if (finalDataUrl.length <= maxLen) {
         resolve(finalDataUrl);
         return;
       }
 
       // Attempt 2: High Resolution & Vivid Colors (1000px max, 0.80 quality)
       finalDataUrl = compressSinglePass(1000, 0.80);
-      if (finalDataUrl.length <= 44000) {
+      if (finalDataUrl.length <= maxLen) {
         resolve(finalDataUrl);
         return;
       }
 
       // Attempt 3: Standard High Quality Fallback (750px max, 0.65 quality)
       finalDataUrl = compressSinglePass(750, 0.65);
-      if (finalDataUrl.length <= 44000) {
+      if (finalDataUrl.length <= maxLen) {
         resolve(finalDataUrl);
         return;
       }
 
       // Attempt 4: Compact High Quality Fallback (500px max, 0.50 quality)
       finalDataUrl = compressSinglePass(500, 0.50);
-      if (finalDataUrl.length <= 44000) {
+      if (finalDataUrl.length <= maxLen) {
         resolve(finalDataUrl);
         return;
       }
 
       // Attempt 5: Safe low-space fallback (350px max, 0.40 quality)
       finalDataUrl = compressSinglePass(350, 0.40);
-      resolve(finalDataUrl.slice(0, 44000));
+      resolve(finalDataUrl.slice(0, maxLen));
     };
 
     if (typeof workingFileOrUrl === 'string') {
@@ -176,7 +176,7 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
       img.onload = () => handleLoadedImage(img);
       img.onerror = () => {
         // Fallback: If image loading fails, return sliced string
-        resolve(workingFileOrUrl.slice(0, 44000));
+        resolve(workingFileOrUrl.slice(0, maxLen));
       };
       img.src = workingFileOrUrl;
     } else {
@@ -185,7 +185,7 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
         const img = new Image();
         img.onload = () => handleLoadedImage(img);
         img.onerror = () => {
-          resolve((e.target?.result as string || '').slice(0, 44000));
+          resolve((e.target?.result as string || '').slice(0, maxLen));
         };
         img.src = e.target?.result as string;
       };
@@ -1796,7 +1796,8 @@ export default function App() {
     
     if (text.startsWith('data:image/')) {
         try {
-            const res = await fetch(text);
+            const imageToCopy = text.includes('|||') ? text.split('|||')[0] : text;
+            const res = await fetch(imageToCopy);
             const blob = await res.blob();
             
             let clipboardBlob = blob;
@@ -2832,8 +2833,22 @@ export default function App() {
                       </div>
                     )}
                     {item.text.startsWith('data:image/') ? (
-                      <div className="w-full flex items-center justify-center">
-                        <img src={item.text} alt="Image content" className="w-full h-auto object-contain rounded-lg bg-black/20" />
+                      <div className="w-full flex flex-col gap-2">
+                        {item.text.includes('|||') ? (
+                          <div className={`grid gap-2 w-full ${
+                            item.text.split('|||').length === 2 ? 'grid-cols-2' : 'grid-cols-2 lg:grid-cols-3'
+                          }`}>
+                            {item.text.split('|||').map((imgUrl, i) => (
+                              <div key={i} className="aspect-square w-full rounded-lg bg-black/20 overflow-hidden flex items-center justify-center border border-white/5 relative group/img">
+                                <img src={imgUrl} alt={`Image content ${i+1}`} className="w-full h-full object-cover cursor-pointer hover:scale-[1.03] transition-transform" />
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="w-full flex items-center justify-center">
+                            <img src={item.text} alt="Image content" className="w-full h-auto object-contain rounded-lg bg-black/20" />
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <>{displayText}</>
@@ -3776,121 +3791,99 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                     btn.textContent = displayLang === 'ar' ? 'جاري تخزين الصور...' : 'Storing images...';
                   }
 
-                  // 1. Process all selected images in parallel for ultra-fast compression. This is local and extremely fast.
-                  const itemsToSave: (TextItem | null)[] = new Array(selectedFiles.length).fill(null);
-                  await Promise.all(selectedFiles.map(async (file, idx) => {
+                  // 1. Process all selected images in parallel for ultra-fast compression. 
+                  // Dynamically allocate budget per image so they collectively fit the Google Sheets block limits beautifully!
+                  const budgetPerImage = Math.floor(43500 / selectedFiles.length);
+                  const compressedImages: string[] = [];
+                  
+                  await Promise.all(selectedFiles.map(async (file) => {
                     try {
-                      const compressed = await compressImageToSafeSize(file);
+                      const compressed = await compressImageToSafeSize(file, budgetPerImage);
                       if (compressed) {
-                        itemsToSave[idx] = {
-                          id: generateTextId() + "_" + idx,
-                          userId: currentUserId,
-                          text: compressed,
-                          timestamp: Date.now() + idx,
-                          synced: false
-                        };
+                        compressedImages.push(compressed);
                       }
                     } catch (err) {
                       console.error("Failed to compress image:", err);
                     }
                   }));
 
-                  const validItems = itemsToSave.filter((item): item is TextItem => item !== null);
+                  if (compressedImages.length > 0) {
+                    // Combine all images into a single string with ||| delimiter
+                    const combinedText = compressedImages.join('|||');
 
-                  if (validItems.length > 0) {
-                    // Prepend items to UI list immediately so user sees them right away
-                    const uiItems = [...validItems].reverse();
-                    setTexts((prev) => [...uiItems, ...prev]);
+                    const textItem: TextItem = {
+                      id: generateTextId(),
+                      userId: currentUserId,
+                      text: combinedText,
+                      timestamp: Date.now(),
+                      synced: false
+                    };
 
-                    // Save all items safely to local IndexedDB first using our safe serialized logic! No overlaps or failures!
+                    // Prepend the combined item to UI list immediately so user sees them right away
+                    setTexts((prev) => [textItem, ...prev]);
+
+                    // Save the combined item safely to local IndexedDB first
                     try {
                       await runSafeIDBWrite((localDb) => {
                         return new Promise<void>((resolve, reject) => {
                           const tx = localDb.transaction('texts', 'readwrite');
                           const store = tx.objectStore('texts');
-                          validItems.forEach(item => {
-                            store.put(item);
-                          });
-                          tx.oncomplete = () => resolve();
-                          tx.onerror = () => reject(tx.error);
+                          const req = store.put(textItem);
+                          req.onsuccess = () => resolve();
+                          req.onerror = () => reject(req.error);
                         });
                       });
                       notifyTabSync(currentUserId);
                     } catch (e) {
-                      console.error("Failed to save items to IndexedDB:", e);
+                      console.error("Failed to save merged item to IndexedDB:", e);
                     }
 
-                    // 2. Upload directly to database (Google Sheets) fully in parallel for ultra-instant concurrent speed!
+                    // 2. Upload combined item to database (Google Sheets) in a single request!
                     (async () => {
-                      // Prevent redundant individual transactions. Run all POST requests at the exact same split-second.
-                      const uploadResults = await Promise.all(validItems.map(async (item) => {
-                        try {
-                          trackingActiveUploads.add(item.id);
-                          
-                          // Priority direct upload to Google Sheets!
-                          await appendToGoogleSheet({
-                            action: "ADD",
-                            id: item.id,
-                            userid: item.userId,
-                            text: item.text,
-                            timestamp: item.timestamp,
-                            starred: item.starred ? 1 : 0
-                          });
+                      try {
+                        trackingActiveUploads.add(textItem.id);
+                        
+                        // Action structure matched perfectly to Google Sheets POST webapp
+                        await appendToGoogleSheet({
+                          action: "ADD",
+                          id: textItem.id,
+                          userid: textItem.userId,
+                          text: textItem.text,
+                          timestamp: textItem.timestamp,
+                          starred: textItem.starred ? 1 : 0
+                        });
 
-                          // Instantly update the UI item status to "synced = true" as soon as it succeeds!
-                          setTexts(prev => prev.map(t => t.id === item.id ? { ...t, synced: true } : t));
-                          return item.id;
-                        } catch (e) {
-                          console.error(`Parallel cloud upload failed for image item ${item.id}:`, e);
-                          return null;
-                        } finally {
-                          trackingActiveUploads.delete(item.id);
-                        }
-                      }));
+                        // Instantly update the UI item status to synced = true upon success
+                        setTexts(prev => prev.map(t => t.id === textItem.id ? { ...t, synced: true } : t));
 
-                      const successfulIds = uploadResults.filter((id): id is string => id !== null);
-                      if (successfulIds.length > 0) {
-                        try {
-                          // Consolidated batch write transaction: mark all successful uploads as synced in a single database swipe!
-                          await runSafeIDBWrite((localDb) => {
-                            return new Promise<void>((resolve, reject) => {
-                              const tx = localDb.transaction('texts', 'readwrite');
-                              const store = tx.objectStore('texts');
-                              
-                              let completedCount = 0;
-                              successfulIds.forEach(id => {
-                                const getReq = store.get(id);
-                                getReq.onsuccess = () => {
-                                  const record = getReq.result;
-                                  if (record) {
-                                    record.synced = true;
-                                    const putReq = store.put(record);
-                                    putReq.onsuccess = () => {
-                                      completedCount++;
-                                      if (completedCount === successfulIds.length) resolve();
-                                    };
-                                    putReq.onerror = () => reject(putReq.error);
-                                  } else {
-                                    completedCount++;
-                                    if (completedCount === successfulIds.length) resolve();
-                                  }
-                                };
-                                getReq.onerror = () => reject(getReq.error);
-                              });
-
-                              if (successfulIds.length === 0) {
+                        // Mark as synced locally
+                        await runSafeIDBWrite((localDb) => {
+                          return new Promise<void>((resolve, reject) => {
+                            const tx = localDb.transaction('texts', 'readwrite');
+                            const store = tx.objectStore('texts');
+                            const getReq = store.get(textItem.id);
+                            getReq.onsuccess = () => {
+                              const record = getReq.result;
+                              if (record) {
+                                record.synced = true;
+                                const putReq = store.put(record);
+                                putReq.onsuccess = () => resolve();
+                                putReq.onerror = () => reject(putReq.error);
+                              } else {
                                 resolve();
                               }
-                            });
+                            };
+                            getReq.onerror = () => reject(getReq.error);
                           });
-                          
-                          // Trigger synchronization broadcast exactly once for the entire batch!
-                          notifyTabSync(currentUserId);
-                        } catch (err) {
-                          console.error("Failed to batch save synced state to Local DB:", err);
-                        }
+                        });
+                        
+                        notifyTabSync(currentUserId);
+                      } catch (e) {
+                        console.error(`Merged cloud upload failed for item ${textItem.id}:`, e);
+                      } finally {
+                        trackingActiveUploads.delete(textItem.id);
                       }
-                    })().catch(err => console.error("Background parallel bulk upload failed:", err));
+                    })().catch(err => console.error("Background bulk upload failed:", err));
                   }
 
                   // Revoke object URLs to prevent memory leak
@@ -4500,7 +4493,15 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
              <div className="w-full max-h-[75vh] bg-[#111] border border-white/10 rounded-3xl overflow-hidden relative flex flex-col">
                  <div className="w-full overflow-y-auto custom-scrollbar p-6 md:p-10">
                      {viewedItem.text.startsWith('data:image/') ? (
-                         <img src={viewedItem.text} alt={t('viewImageAlt', displayLang)} className="w-full h-auto max-h-[70vh] object-contain rounded-xl" />
+                         viewedItem.text.includes('|||') ? (
+                             <div className="flex flex-col gap-4 w-full">
+                                 {viewedItem.text.split('|||').map((imgUrl, i) => (
+                                     <img key={i} src={imgUrl} alt={`${t('viewImageAlt', displayLang)} ${i+1}`} className="w-full h-auto max-h-[75vh] object-contain rounded-xl bg-black/10 border border-white/5" />
+                                 ))}
+                             </div>
+                         ) : (
+                             <img src={viewedItem.text} alt={t('viewImageAlt', displayLang)} className="w-full h-auto max-h-[70vh] object-contain rounded-xl" />
+                         )
                      ) : (
                          <div className="text-white whitespace-pre-wrap text-[18px] md:text-[22px] leading-relaxed w-full break-words text-right" dir="auto">
                              {viewedItem.text}
