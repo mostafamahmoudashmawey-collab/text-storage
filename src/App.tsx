@@ -93,10 +93,12 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
     }
 
     const handleLoadedImage = (img: HTMLImageElement) => {
-      let maxDim = 1200; // Start with high resolution for supreme detail as requested
-      let quality = 0.95; // Start with premium quality
-      
-      const attemptCompress = (): string => {
+      // Helper function to compress with specific scale factor (0.0 to 1.0)
+      const compressWithT = (t: number): string => {
+        // We interpolate maxDim from 200 to 1250, and quality from 0.45 to 0.96
+        const maxDim = Math.round(200 + t * 1050);
+        const quality = 0.45 + t * 0.51;
+        
         const canvas = document.createElement('canvas');
         let width = img.width;
         let height = img.height;
@@ -127,32 +129,38 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
         }
         return dataUrl;
       };
-      
-      let finalDataUrl = attemptCompress();
-      
-      // Gradually adjust quality and dimensions step-by-step
-      // This maintains highest possible quality for the character limit
-      while (finalDataUrl.length > 44000 && (maxDim > 50 || quality > 0.05)) {
-        if (quality > 0.7) {
-          quality = Math.max(0.7, quality - 0.05);
-        } else if (maxDim > 800) {
-          maxDim -= 100;
-        } else if (quality > 0.4) {
-          quality = Math.max(0.4, quality - 0.05);
-        } else if (maxDim > 300) {
-          maxDim -= 50;
-        } else if (quality > 0.1) {
-          quality = Math.max(0.1, quality - 0.05);
-        } else if (maxDim > 100) {
-          maxDim -= 25;
-        } else {
-          quality = Math.max(0.05, quality - 0.02);
-          maxDim = Math.max(50, maxDim - 10);
-        }
-        finalDataUrl = attemptCompress();
+
+      // Binary Search of active compression factor t
+      // 4 iterations are extremely fast and pinpoint the highest quality fitting under 44000 chars!
+      let finalDataUrl = compressWithT(1.0);
+      if (finalDataUrl.length <= 44000) {
+        resolve(finalDataUrl);
+        return;
       }
-      
-      resolve(finalDataUrl);
+
+      let low = 0.0;
+      let high = 1.0;
+      let bestT = 0.0;
+      let bestDataUrl = "";
+
+      for (let step = 0; step < 4; step++) {
+        const mid = (low + high) / 2;
+        const currentResult = compressWithT(mid);
+        if (currentResult.length <= 44000) {
+          bestT = mid;
+          bestDataUrl = currentResult;
+          low = mid; // Try searching higher values for more details
+        } else {
+          high = mid; // Result too large, search lower values
+        }
+      }
+
+      if (bestDataUrl) {
+        resolve(bestDataUrl);
+      } else {
+        // Fallback to lowest possible dimension if still too large or not resolved
+        resolve(compressWithT(0.0).slice(0, 44000));
+      }
     };
 
     if (typeof workingFileOrUrl === 'string') {
@@ -3745,57 +3753,63 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                   const btn = document.getElementById('add-all-btn') as HTMLButtonElement;
                   if (btn) {
                     btn.disabled = true;
+                    btn.textContent = displayLang === 'ar' ? 'جاري تخزين الصور...' : 'Storing images...';
                   }
 
-                  // Process and upload in parallel batches of 3 as requested (دفعة واحدة ٣ صور ب٣ صور)
-                  const batchSize = 3;
-                  for (let i = 0; i < selectedFiles.length; i += batchSize) {
-                    const batch = selectedFiles.slice(i, i + batchSize);
-                    if (btn) {
-                      const startRange = i + 1;
-                      const endRange = Math.min(i + batch.length, selectedFiles.length);
-                      btn.textContent = displayLang === 'ar' 
-                        ? `جاري الرفع للتخزين دفعة (${startRange}-${endRange}/${selectedFiles.length})...` 
-                        : `Uploading batch (${startRange}-${endRange}/${selectedFiles.length})...`;
+                  // 1. Process all selected images in parallel for ultra-fast compression. This is local and extremely fast.
+                  const itemsToSave: (TextItem | null)[] = new Array(selectedFiles.length).fill(null);
+                  await Promise.all(selectedFiles.map(async (file, idx) => {
+                    try {
+                      const compressed = await compressImageToSafeSize(file);
+                      if (compressed) {
+                        itemsToSave[idx] = {
+                          id: generateTextId() + "_" + idx,
+                          userId: currentUserId,
+                          text: compressed,
+                          timestamp: Date.now() + idx,
+                          synced: false
+                        };
+                      }
+                    } catch (err) {
+                      console.error("Failed to compress image:", err);
+                    }
+                  }));
+
+                  const validItems = itemsToSave.filter((item): item is TextItem => item !== null);
+
+                  if (validItems.length > 0) {
+                    // Prepend items to UI list immediately so user sees them right away
+                    const uiItems = [...validItems].reverse();
+                    setTexts((prev) => [...uiItems, ...prev]);
+
+                    // Save all items to local IndexedDB first (extremely fast, works offline/instantly)
+                    try {
+                      const localDb = await initLocalDB();
+                      await Promise.all(validItems.map(item => {
+                        return new Promise<void>((resolve, reject) => {
+                          const tx = localDb.transaction('texts', 'readwrite');
+                          const store = tx.objectStore('texts');
+                          const req = store.put(item);
+                          req.onsuccess = () => resolve();
+                          req.onerror = reject;
+                        });
+                      }));
+                      notifyTabSync(currentUserId);
+                    } catch (e) {
+                      console.error("Failed to save items to IndexedDB:", e);
                     }
 
-                    // Process this batch of up to 3 images in parallel
-                    const itemsToSave: (TextItem | null)[] = new Array(batch.length).fill(null);
-                    await Promise.all(batch.map(async (file, indexInBatch) => {
-                      const globalIdx = i + indexInBatch;
-                      try {
-                        const compressed = await compressImageToSafeSize(file);
-                        if (compressed) {
-                          itemsToSave[indexInBatch] = {
-                            id: generateTextId() + "_" + globalIdx,
-                            userId: currentUserId,
-                            text: compressed,
-                            timestamp: Date.now() + globalIdx,
-                            synced: false
-                          };
-                        }
-                      } catch (err) {
-                        console.error("Failed to process image in batch:", err);
-                      }
-                    }));
-
-                    const validItems = itemsToSave.filter((item): item is TextItem => item !== null);
-
-                    if (validItems.length > 0) {
-                      // Prepend items to ui list in reverse order of their processing so first selected item ends up at top of list
-                      const uiItems = [...validItems].reverse();
-                      setTexts((prev) => [...uiItems, ...prev]);
-
-                      // Save this batch of up to 3 to the database concurrently (دفعة واحدة ٣ ب٣)
+                    // 2. Upload to database (Google Sheets) in background fully in parallel for ultra-instant response!
+                    (async () => {
                       await Promise.all(validItems.map(async (item) => {
                         try {
                           await saveTextToDB(item);
                           setTexts(prev => prev.map(t => t.id === item.id ? { ...t, synced: true } : t));
                         } catch (e) {
-                          console.error("Local database save failed for batch upload:", e);
+                          console.error("Local database save failed for upload:", e);
                         }
                       }));
-                    }
+                    })().catch(err => console.error("Background parallel upload failed:", err));
                   }
 
                   // Revoke object URLs to prevent memory leak
