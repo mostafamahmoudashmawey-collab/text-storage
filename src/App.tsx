@@ -3747,38 +3747,54 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                     btn.disabled = true;
                   }
 
-                  // Compress and upload sequentially, image-by-image
-                  for (let i = 0; i < selectedFiles.length; i++) {
-                    const file = selectedFiles[i];
+                  // Process and upload in parallel batches of 3 as requested (دفعة واحدة ٣ صور ب٣ صور)
+                  const batchSize = 3;
+                  for (let i = 0; i < selectedFiles.length; i += batchSize) {
+                    const batch = selectedFiles.slice(i, i + batchSize);
                     if (btn) {
+                      const startRange = i + 1;
+                      const endRange = Math.min(i + batch.length, selectedFiles.length);
                       btn.textContent = displayLang === 'ar' 
-                        ? `جاري الرفع للتخزين (${i + 1}/${selectedFiles.length})...` 
-                        : `Uploading sequentially (${i + 1}/${selectedFiles.length})...`;
+                        ? `جاري الرفع للتخزين دفعة (${startRange}-${endRange}/${selectedFiles.length})...` 
+                        : `Uploading batch (${startRange}-${endRange}/${selectedFiles.length})...`;
                     }
-                    try {
-                      const compressed = await compressImageToSafeSize(file);
-                      if (compressed) {
-                        const item: TextItem = {
-                          id: generateTextId() + "_" + i,
-                          userId: currentUserId,
-                          text: compressed,
-                          timestamp: Date.now() + i,
-                          synced: false
-                        };
-                        
-                        // Push into the UI list immediately so user sees real-time progress
-                        setTexts((prev) => [item, ...prev]);
 
-                        // Save this single image immediately to DB
+                    // Process this batch of up to 3 images in parallel
+                    const itemsToSave: (TextItem | null)[] = new Array(batch.length).fill(null);
+                    await Promise.all(batch.map(async (file, indexInBatch) => {
+                      const globalIdx = i + indexInBatch;
+                      try {
+                        const compressed = await compressImageToSafeSize(file);
+                        if (compressed) {
+                          itemsToSave[indexInBatch] = {
+                            id: generateTextId() + "_" + globalIdx,
+                            userId: currentUserId,
+                            text: compressed,
+                            timestamp: Date.now() + globalIdx,
+                            synced: false
+                          };
+                        }
+                      } catch (err) {
+                        console.error("Failed to process image in batch:", err);
+                      }
+                    }));
+
+                    const validItems = itemsToSave.filter((item): item is TextItem => item !== null);
+
+                    if (validItems.length > 0) {
+                      // Prepend items to ui list in reverse order of their processing so first selected item ends up at top of list
+                      const uiItems = [...validItems].reverse();
+                      setTexts((prev) => [...uiItems, ...prev]);
+
+                      // Save this batch of up to 3 to the database concurrently (دفعة واحدة ٣ ب٣)
+                      await Promise.all(validItems.map(async (item) => {
                         try {
                           await saveTextToDB(item);
                           setTexts(prev => prev.map(t => t.id === item.id ? { ...t, synced: true } : t));
                         } catch (e) {
-                          console.error("Local database save failed for single sequential upload:", e);
+                          console.error("Local database save failed for batch upload:", e);
                         }
-                      }
-                    } catch (err) {
-                      console.error("Failed to sequentially process image:", err);
+                      }));
                     }
                   }
 
