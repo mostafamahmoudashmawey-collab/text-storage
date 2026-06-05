@@ -335,6 +335,18 @@ const initLocalDB = (): Promise<IDBDatabase> => {
   });
 };
 
+let idbWriteQueue: Promise<any> = Promise.resolve();
+
+const runSafeIDBWrite = async <T,>(operation: (db: IDBDatabase) => Promise<T>): Promise<T> => {
+  const next = async (): Promise<T> => {
+    const db = await initLocalDB();
+    return operation(db);
+  };
+  const result = idbWriteQueue.then(next);
+  idbWriteQueue = result.catch(() => {});
+  return result;
+};
+
 const TAB_ID = Math.random().toString(36).substring(2);
 let lastLocalWriteTime = 0;
 const pendingDeletedIds = new Set<string>();
@@ -376,13 +388,14 @@ const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
   const itemToSave = { ...textItem, synced: false };
   
   try {
-    const localDb = await initLocalDB();
-    await new Promise((resolve, reject) => {
-      const tx = localDb.transaction('texts', 'readwrite');
-      const store = tx.objectStore('texts');
-      const req = store.put(itemToSave);
-      req.onsuccess = resolve;
-      req.onerror = reject;
+    await runSafeIDBWrite((localDb) => {
+      return new Promise<void>((resolve, reject) => {
+        const tx = localDb.transaction('texts', 'readwrite');
+        const store = tx.objectStore('texts');
+        const req = store.put(itemToSave);
+        req.onsuccess = () => resolve();
+        req.onerror = () => reject(req.error);
+      });
     });
   } catch (e) {
     console.error("Local save error", e);
@@ -403,13 +416,14 @@ const saveTextToDB = async (textItem: TextItem, isUpdate = false) => {
     
     // Mark as synced locally so the pending counter drops smoothly one by one
     try {
-      const localDb = await initLocalDB();
-      await new Promise<void>((resolve, reject) => {
-        const tx = localDb.transaction('texts', 'readwrite');
-        const store = tx.objectStore('texts');
-        const req = store.put({ ...itemToSave, synced: true });
-        req.onsuccess = () => resolve();
-        req.onerror = reject;
+      await runSafeIDBWrite((localDb) => {
+        return new Promise<void>((resolve, reject) => {
+          const tx = localDb.transaction('texts', 'readwrite');
+          const store = tx.objectStore('texts');
+          const req = store.put({ ...itemToSave, synced: true });
+          req.onsuccess = () => resolve();
+          req.onerror = () => reject(req.error);
+        });
       });
       // Notify this tab so it updates its texts state
       window.dispatchEvent(new CustomEvent('local_item_synced', { detail: textItem.id }));
@@ -2088,8 +2102,8 @@ export default function App() {
   };
 
   const handleImageFiles = async (files: File[]) => {
-    // Max 3 images (100 for special user 22222)
-    const maxLimit = currentUserId === '22222' ? 100 : 3;
+    // Allow up to 100 images to be attached and uploaded for all users to prevent drops!
+    const maxLimit = 100;
     const targetFiles = files.slice(0, maxLimit - imagePreviews.length);
     if (targetFiles.length === 0) return;
 
@@ -3715,7 +3729,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                 </div>
               ))}
               
-              {imagePreviews.length > 0 && imagePreviews.length < (currentUserId === '22222' ? 100 : 3) && !isProcessingImages && (
+              {imagePreviews.length > 0 && imagePreviews.length < 100 && !isProcessingImages && (
                 <div 
                   className="aspect-square w-full bg-white/5 hover:bg-white/10 border border-dashed border-white/20 hover:border-white/40 rounded-xl flex flex-col items-center justify-center transition-all cursor-pointer group"
                   onClick={() => {
@@ -3783,18 +3797,19 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                     const uiItems = [...validItems].reverse();
                     setTexts((prev) => [...uiItems, ...prev]);
 
-                    // Save all items to local IndexedDB first (extremely fast, works offline/instantly)
+                    // Save all items safely to local IndexedDB first using our safe serialized logic! No overlaps or failures!
                     try {
-                      const localDb = await initLocalDB();
-                      await Promise.all(validItems.map(item => {
+                      await runSafeIDBWrite((localDb) => {
                         return new Promise<void>((resolve, reject) => {
                           const tx = localDb.transaction('texts', 'readwrite');
                           const store = tx.objectStore('texts');
-                          const req = store.put(item);
-                          req.onsuccess = () => resolve();
-                          req.onerror = reject;
+                          validItems.forEach(item => {
+                            store.put(item);
+                          });
+                          tx.oncomplete = () => resolve();
+                          tx.onerror = () => reject(tx.error);
                         });
-                      }));
+                      });
                       notifyTabSync(currentUserId);
                     } catch (e) {
                       console.error("Failed to save items to IndexedDB:", e);
