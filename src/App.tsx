@@ -2109,13 +2109,17 @@ export default function App() {
   };
 
   const handleImageFiles = async (files: File[]) => {
-    // Process all attached images in full without any artificial limits, slices, or drops!
-    if (files.length === 0) return;
+    // Process attached images safely under account limits: Max 3 for all, infinite for '22222'!
+    const maxLimit = currentUserId === '22222' ? Infinity : 3;
+    const allowedCount = Math.max(0, maxLimit - imagePreviews.length);
+    if (allowedCount === 0 || files.length === 0) return;
+
+    const targetFiles = files.slice(0, allowedCount);
 
     const newPreviews: string[] = [];
     const newFiles: File[] = [];
 
-    for (const file of files) {
+    for (const file of targetFiles) {
       const isImage = file.type.startsWith('image/') || 
         /\.(jpg|jpeg|png|gif|webp|svg|heic|heif|tiff|bmp|jfif|ico)$/i.test(file.name);
 
@@ -3734,7 +3738,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                 </div>
               ))}
               
-              {imagePreviews.length > 0 && !isProcessingImages && (
+              {imagePreviews.length > 0 && imagePreviews.length < (currentUserId === '22222' ? Infinity : 3) && !isProcessingImages && (
                 <div 
                   className="aspect-square w-full bg-white/5 hover:bg-white/10 border border-dashed border-white/20 hover:border-white/40 rounded-xl flex flex-col items-center justify-center transition-all cursor-pointer group"
                   onClick={() => {
