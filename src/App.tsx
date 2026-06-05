@@ -1344,6 +1344,19 @@ export default function App() {
   const [showNotificationsPopup, setShowNotificationsPopup] = useState(false);
   const [prevSecurityAttemptsCount, setPrevSecurityAttemptsCount] = useState(0);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [isProcessingImages, setIsProcessingImages] = useState(false);
+  const closeAndClearImagePopup = () => {
+    if (isProcessingImages) return;
+    imagePreviews.forEach(url => {
+      if (url.startsWith('blob:')) {
+        URL.revokeObjectURL(url);
+      }
+    });
+    setImagePreviews([]);
+    setSelectedFiles([]);
+    setShowAddImagePopup(false);
+  };
   const [readNotifications, setReadNotifications] = useState<Set<string>>(new Set());
   const notifScrollRef = useRef<HTMLDivElement>(null);
 
@@ -2071,26 +2084,23 @@ export default function App() {
     const targetFiles = files.slice(0, maxLimit - imagePreviews.length);
     if (targetFiles.length === 0) return;
 
-    // Process all images in parallel for ultra-fast instant UI loading
-    const promises = targetFiles.map(async (file) => {
+    const newPreviews: string[] = [];
+    const newFiles: File[] = [];
+
+    for (const file of targetFiles) {
       const isImage = file.type.startsWith('image/') || 
         /\.(jpg|jpeg|png|gif|webp|svg|heic|heif|tiff|bmp|jfif|ico)$/i.test(file.name);
 
       if (isImage) {
-        try {
-          const compressed = await compressImageToSafeSize(file);
-          return compressed;
-        } catch (e) {
-          console.error("Error compressing image:", e);
-          return null;
-        }
+        // Fast instant Object URL preview
+        const previewUrl = URL.createObjectURL(file);
+        newPreviews.push(previewUrl);
+        newFiles.push(file);
       }
-      return null;
-    });
+    }
 
-    const results = await Promise.all(promises);
-    const validResults = results.filter((r): r is string => !!r);
-    setImagePreviews(prev => [...prev, ...validResults]);
+    setImagePreviews(prev => [...prev, ...newPreviews]);
+    setSelectedFiles(prev => [...prev, ...newFiles]);
   };
 
   const handleGoToSignup = async () => {
@@ -3619,21 +3629,24 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                            timestamp: Date.now(),
                            starred: 0
                         });
-                        sendP2P(`app_attacker_${currentUserId}_${activeChatAttempt.attemptId}`, { type: 'CHAT', chat: newChat });
-                        setChatsData(prev => [...prev, newChat]);
-                        setChatInputValue('');
-                    }}
-                    className="p-3 bg-white hover:bg-gray-200 outline-none border-none text-black rounded-xl transition-colors shrink-0"
-                 >
-                    <Send size={20} style={{ transform: 'scaleX(-1)' }} />
-                 </button>
-             </div>
-          </div>
-        </div>
-      )}
+                         sendP2P(`app_attacker_${currentUserId}_${activeChatAttempt.attemptId}`, { type: 'CHAT', chat: newChat });
+                         setChatsData(prev => [...prev, newChat]);
+                         setChatInputValue('');
+                     }}
+                     className="p-3 bg-white hover:bg-gray-200 outline-none border-none text-black rounded-xl shrink-0"
+                  >
+                     <Send size={20} style={{ transform: 'scaleX(-1)' }} />
+                  </button>
+              </div>
+           </div>
+         </div>
+       )}
 
       {showAddImagePopup && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4" onClick={() => { setShowAddImagePopup(false); setImagePreviews([]); }}>
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4" 
+          onClick={() => { if (!isProcessingImages) closeAndClearImagePopup(); }}
+        >
           <div 
              className="bg-[#111] border border-white/10 p-6 rounded-3xl flex flex-col gap-4 w-full max-w-2xl max-h-[85vh] shadow-[0_0_40px_rgba(0,0,0,0.8)] relative"
              onClick={(e) => e.stopPropagation()}
@@ -3641,8 +3654,9 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
             <div className="flex justify-between items-center w-full pb-1" dir="rtl">
               <div className="text-xl text-gray-300 font-medium">{t('addImagesTitle', displayLang)}</div>
               <button 
-                onClick={() => { setShowAddImagePopup(false); setImagePreviews([]); }}
-                className="text-gray-500 hover:text-white transition-colors cursor-pointer text-base bg-transparent border-none outline-none"
+                onClick={() => { if (!isProcessingImages) closeAndClearImagePopup(); }}
+                disabled={isProcessingImages}
+                className={`text-gray-500 hover:text-white transition-colors cursor-pointer text-base bg-transparent border-none outline-none ${isProcessingImages ? 'opacity-30 cursor-not-allowed' : ''}`}
               >
                 {t('cancel', displayLang)}
               </button>
@@ -3653,6 +3667,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
               onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
               onDrop={(e) => {
                 e.preventDefault(); e.stopPropagation();
+                if (isProcessingImages) return;
                 if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
                   handleImageFiles(Array.from(e.dataTransfer.files));
                 }
@@ -3661,8 +3676,9 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
               <input 
                 type="file" 
                 multiple
+                disabled={isProcessingImages}
                 accept="image/*, .heic, .heif, .webp, .svg, .bmp, .gif, .png, .jpg, .jpeg, .tiff, .ico" 
-                className={`absolute inset-0 w-full h-full opacity-0 cursor-pointer ${imagePreviews.length > 0 ? 'hidden' : ''}`}
+                className={`absolute inset-0 w-full h-full opacity-0 cursor-pointer ${imagePreviews.length > 0 || isProcessingImages ? 'hidden' : ''}`}
                 onChange={(e) => {
                   if (e.target.files && e.target.files.length > 0) {
                     handleImageFiles(Array.from(e.target.files));
@@ -3674,21 +3690,27 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                 <div key={index} className="relative aspect-square w-full group bg-black/20 rounded-xl overflow-hidden border border-white/10 flex items-center justify-center">
                   <img src={preview} alt="Preview" className="max-w-full max-h-full object-contain" />
                   <button 
+                    disabled={isProcessingImages}
                     onClick={(e) => {
                         e.stopPropagation();
+                        if (preview.startsWith('blob:')) {
+                          URL.revokeObjectURL(preview);
+                        }
                         setImagePreviews(prev => prev.filter((_, i) => i !== index));
+                        setSelectedFiles(prev => prev.filter((_, i) => i !== index));
                     }}
-                    className="absolute top-2 right-2 p-1.5 bg-black/60 hover:bg-black text-white rounded-full transition-colors opacity-100 md:opacity-0 md:group-hover:opacity-100 z-10"
+                    className={`absolute top-2 right-2 p-1.5 bg-black/60 hover:bg-black text-white rounded-full transition-colors opacity-100 md:opacity-0 md:group-hover:opacity-100 z-10 ${isProcessingImages ? 'hidden' : ''}`}
                   >
                     <X size={16} />
                   </button>
                 </div>
               ))}
               
-              {imagePreviews.length > 0 && imagePreviews.length < (currentUserId === '22222' ? 100 : 3) && (
+              {imagePreviews.length > 0 && imagePreviews.length < (currentUserId === '22222' ? 100 : 3) && !isProcessingImages && (
                 <div 
                   className="aspect-square w-full bg-white/5 hover:bg-white/10 border border-dashed border-white/20 hover:border-white/40 rounded-xl flex flex-col items-center justify-center transition-all cursor-pointer group"
                   onClick={() => {
+                    if (isProcessingImages) return;
                     const input = document.createElement('input');
                     input.type = 'file';
                     input.multiple = true;
@@ -3717,44 +3739,64 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
               <div className="text-sm text-gray-500">{t('imagesSelected', displayLang, imagePreviews.length)}</div>
               <button 
                 onClick={async () => {
-                  if (imagePreviews.length === 0) return;
+                  if (selectedFiles.length === 0 || isProcessingImages) return;
                   
-                  // Show loading feedback
+                  setIsProcessingImages(true);
                   const btn = document.getElementById('add-all-btn') as HTMLButtonElement;
                   if (btn) {
                     btn.disabled = true;
-                    btn.textContent = t('uploading', displayLang);
                   }
 
-                  const newItems: TextItem[] = imagePreviews.map((preview, i) => ({
-                    id: generateTextId() + "_" + i,
-                    userId: currentUserId,
-                    text: preview,
-                    timestamp: Date.now() + i,
-                    synced: false // Initially not synced, will mark synced if successful
-                  }));
+                  // Compress and upload sequentially, image-by-image
+                  for (let i = 0; i < selectedFiles.length; i++) {
+                    const file = selectedFiles[i];
+                    if (btn) {
+                      btn.textContent = displayLang === 'ar' 
+                        ? `جاري الرفع للتخزين (${i + 1}/${selectedFiles.length})...` 
+                        : `Uploading sequentially (${i + 1}/${selectedFiles.length})...`;
+                    }
+                    try {
+                      const compressed = await compressImageToSafeSize(file);
+                      if (compressed) {
+                        const item: TextItem = {
+                          id: generateTextId() + "_" + i,
+                          userId: currentUserId,
+                          text: compressed,
+                          timestamp: Date.now() + i,
+                          synced: false
+                        };
+                        
+                        // Push into the UI list immediately so user sees real-time progress
+                        setTexts((prev) => [item, ...prev]);
+
+                        // Save this single image immediately to DB
+                        try {
+                          await saveTextToDB(item);
+                          setTexts(prev => prev.map(t => t.id === item.id ? { ...t, synced: true } : t));
+                        } catch (e) {
+                          console.error("Local database save failed for single sequential upload:", e);
+                        }
+                      }
+                    } catch (err) {
+                      console.error("Failed to sequentially process image:", err);
+                    }
+                  }
+
+                  // Revoke object URLs to prevent memory leak
+                  imagePreviews.forEach(url => {
+                    if (url.startsWith('blob:')) {
+                      URL.revokeObjectURL(url);
+                    }
+                  });
                   
-                  setTexts((prev) => [...newItems.reverse(), ...prev]);
-                  
-                  setShowAddImagePopup(false);
                   setImagePreviews([]);
-                  
-                   // Sequential database uploads (one by one)
-                   (async () => {
-                     for (const item of newItems) {
-                       try {
-                         await saveTextToDB(item);
-                         // Mark as synced if successful
-                         setTexts(prev => prev.map(t => t.id === item.id ? { ...t, synced: true } : t));
-                       } catch (e) {
-                          console.error("Failed to upload image item sequentially", e);
-                       }
-                     }
-                   })();
+                  setSelectedFiles([]);
+                  setIsProcessingImages(false);
+                  setShowAddImagePopup(false);
                 }} 
                 id="add-all-btn"
-                disabled={imagePreviews.length === 0}
-                className={`px-8 py-2 rounded-full font-medium transition-all text-lg ${imagePreviews.length > 0 ? 'bg-white text-black hover:bg-gray-200 cursor-pointer hover:scale-105 active:scale-95 shadow-[0_0_15px_rgba(255,255,255,0.2)]' : 'bg-white/20 text-gray-500 cursor-not-allowed'}`}
+                disabled={imagePreviews.length === 0 || isProcessingImages}
+                className={`px-8 py-2 rounded-full font-medium transition-all text-lg ${imagePreviews.length > 0 && !isProcessingImages ? 'bg-white text-black hover:bg-gray-200 cursor-pointer hover:scale-105 active:scale-95 shadow-[0_0_15px_rgba(255,255,255,0.2)]' : 'bg-white/20 text-gray-500 cursor-not-allowed'}`}
               >
                 {t('addAll', displayLang)}
               </button>
