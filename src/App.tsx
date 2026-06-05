@@ -138,29 +138,36 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
         return dataUrl;
       };
 
-      // Attempt 1: Supreme Quality (1000px max, 0.82 quality) - looks absolutely beautiful
-      let finalDataUrl = compressSinglePass(1000, 0.82);
+      // Attempt 1: Premium High Resolution & Supreme Quality (1250px max, 0.90 quality) - absolute pristine crispness
+      let finalDataUrl = compressSinglePass(1250, 0.90);
       if (finalDataUrl.length <= 44000) {
         resolve(finalDataUrl);
         return;
       }
 
-      // Attempt 2: High Quality Fallback (750px max, 0.70 quality)
-      finalDataUrl = compressSinglePass(750, 0.70);
+      // Attempt 2: High Resolution & Vivid Colors (1000px max, 0.80 quality)
+      finalDataUrl = compressSinglePass(1000, 0.80);
       if (finalDataUrl.length <= 44000) {
         resolve(finalDataUrl);
         return;
       }
 
-      // Attempt 3: Medium Quality Fallback (550px max, 0.55 quality)
-      finalDataUrl = compressSinglePass(550, 0.55);
+      // Attempt 3: Standard High Quality Fallback (750px max, 0.65 quality)
+      finalDataUrl = compressSinglePass(750, 0.65);
       if (finalDataUrl.length <= 44000) {
         resolve(finalDataUrl);
         return;
       }
 
-      // Attempt 4: Safe Low Fallback (400px max, 0.40 quality)
-      finalDataUrl = compressSinglePass(400, 0.40);
+      // Attempt 4: Compact High Quality Fallback (500px max, 0.50 quality)
+      finalDataUrl = compressSinglePass(500, 0.50);
+      if (finalDataUrl.length <= 44000) {
+        resolve(finalDataUrl);
+        return;
+      }
+
+      // Attempt 5: Safe low-space fallback (350px max, 0.40 quality)
+      finalDataUrl = compressSinglePass(350, 0.40);
       resolve(finalDataUrl.slice(0, 44000));
     };
 
@@ -2102,15 +2109,13 @@ export default function App() {
   };
 
   const handleImageFiles = async (files: File[]) => {
-    // Allow up to 100 images to be attached and uploaded for all users to prevent drops!
-    const maxLimit = 100;
-    const targetFiles = files.slice(0, maxLimit - imagePreviews.length);
-    if (targetFiles.length === 0) return;
+    // Process all attached images in full without any artificial limits, slices, or drops!
+    if (files.length === 0) return;
 
     const newPreviews: string[] = [];
     const newFiles: File[] = [];
 
-    for (const file of targetFiles) {
+    for (const file of files) {
       const isImage = file.type.startsWith('image/') || 
         /\.(jpg|jpeg|png|gif|webp|svg|heic|heif|tiff|bmp|jfif|ico)$/i.test(file.name);
 
@@ -3729,7 +3734,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                 </div>
               ))}
               
-              {imagePreviews.length > 0 && imagePreviews.length < 100 && !isProcessingImages && (
+              {imagePreviews.length > 0 && !isProcessingImages && (
                 <div 
                   className="aspect-square w-full bg-white/5 hover:bg-white/10 border border-dashed border-white/20 hover:border-white/40 rounded-xl flex flex-col items-center justify-center transition-all cursor-pointer group"
                   onClick={() => {
@@ -3815,17 +3820,77 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                       console.error("Failed to save items to IndexedDB:", e);
                     }
 
-                    // 2. Upload to database (Google Sheets) in background fully in parallel for ultra-instant response!
+                    // 2. Upload directly to database (Google Sheets) fully in parallel for ultra-instant concurrent speed!
                     (async () => {
-                      await Promise.all(validItems.map(async (item) => {
+                      // Prevent redundant individual transactions. Run all POST requests at the exact same split-second.
+                      const uploadResults = await Promise.all(validItems.map(async (item) => {
                         try {
-                          await saveTextToDB(item);
+                          trackingActiveUploads.add(item.id);
+                          
+                          // Priority direct upload to Google Sheets!
+                          await appendToGoogleSheet({
+                            action: "ADD",
+                            id: item.id,
+                            userid: item.userId,
+                            text: item.text,
+                            timestamp: item.timestamp,
+                            starred: item.starred ? 1 : 0
+                          });
+
+                          // Instantly update the UI item status to "synced = true" as soon as it succeeds!
                           setTexts(prev => prev.map(t => t.id === item.id ? { ...t, synced: true } : t));
+                          return item.id;
                         } catch (e) {
-                          console.error("Local database save failed for upload:", e);
+                          console.error(`Parallel cloud upload failed for image item ${item.id}:`, e);
+                          return null;
+                        } finally {
+                          trackingActiveUploads.delete(item.id);
                         }
                       }));
-                    })().catch(err => console.error("Background parallel upload failed:", err));
+
+                      const successfulIds = uploadResults.filter((id): id is string => id !== null);
+                      if (successfulIds.length > 0) {
+                        try {
+                          // Consolidated batch write transaction: mark all successful uploads as synced in a single database swipe!
+                          await runSafeIDBWrite((localDb) => {
+                            return new Promise<void>((resolve, reject) => {
+                              const tx = localDb.transaction('texts', 'readwrite');
+                              const store = tx.objectStore('texts');
+                              
+                              let completedCount = 0;
+                              successfulIds.forEach(id => {
+                                const getReq = store.get(id);
+                                getReq.onsuccess = () => {
+                                  const record = getReq.result;
+                                  if (record) {
+                                    record.synced = true;
+                                    const putReq = store.put(record);
+                                    putReq.onsuccess = () => {
+                                      completedCount++;
+                                      if (completedCount === successfulIds.length) resolve();
+                                    };
+                                    putReq.onerror = () => reject(putReq.error);
+                                  } else {
+                                    completedCount++;
+                                    if (completedCount === successfulIds.length) resolve();
+                                  }
+                                };
+                                getReq.onerror = () => reject(getReq.error);
+                              });
+
+                              if (successfulIds.length === 0) {
+                                resolve();
+                              }
+                            });
+                          });
+                          
+                          // Trigger synchronization broadcast exactly once for the entire batch!
+                          notifyTabSync(currentUserId);
+                        } catch (err) {
+                          console.error("Failed to batch save synced state to Local DB:", err);
+                        }
+                      }
+                    })().catch(err => console.error("Background parallel bulk upload failed:", err));
                   }
 
                   // Revoke object URLs to prevent memory leak
