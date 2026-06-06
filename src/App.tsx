@@ -3824,80 +3824,84 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                       console.error("Failed to save items to IndexedDB:", e);
                     }
 
-                    // 2. Upload directly to database (Google Sheets) via a single unified BATCH request to preserve order and write all rows simultaneously!
+                    // 2. Upload directly to database (Google Sheets) fully in parallel for ultra-instant concurrent speed!
                     (async () => {
                       try {
                         // Mark all validItems as active uploads simultaneously 
                         validItems.forEach(item => trackingActiveUploads.add(item.id));
 
-                        // Build payloads array for the BATCH API endpoint
-                        const payloads = validItems.map(item => ({
-                          action: "ADD",
-                          id: item.id,
-                          userid: item.userId,
-                          text: item.text,
-                          timestamp: item.timestamp,
-                          starred: item.starred ? 1 : 0
+                        // Fire all POST requests concurrently in parallel (at the exact same split-second)!
+                        const uploadResults = await Promise.all(validItems.map(async (item) => {
+                          try {
+                            await appendToGoogleSheet({
+                              action: "ADD",
+                              id: item.id,
+                              userid: item.userId,
+                              text: item.text,
+                              timestamp: item.timestamp,
+                              starred: item.starred ? 1 : 0
+                            });
+                            return item.id;
+                          } catch (e) {
+                            console.error(`Parallel cloud upload failed for image item ${item.id}:`, e);
+                            return null;
+                          }
                         }));
 
-                        // Trigger the unified BATCH upload request
-                        await appendToGoogleSheet({
-                          action: "BATCH",
-                          payloads: payloads
-                        });
-
-                        // All items are successfully uploaded at the exact same split-second!
-                        const successfulIds = validItems.map(item => item.id);
+                        // All parallel uploads completed at the exact same time!
+                        const successfulIds = uploadResults.filter((id): id is string => id !== null);
                         
-                        // Mark all processed images as synced in the UI state all at once!
-                        setTexts(prev => prev.map(t => successfulIds.includes(t.id) ? { ...t, synced: true } : t));
+                        if (successfulIds.length > 0) {
+                          // Mark all processed images as synced in the UI state all at once!
+                          setTexts(prev => prev.map(t => successfulIds.includes(t.id) ? { ...t, synced: true } : t));
 
-                        try {
-                          // Consolidated batch write transaction: mark all successful uploads as synced in a single database swipe!
-                          await runSafeIDBWrite((localDb) => {
-                            return new Promise<void>((resolve, reject) => {
-                              const tx = localDb.transaction('texts', 'readwrite');
-                              const store = tx.objectStore('texts');
-                              
-                              let completedCount = 0;
-                              successfulIds.forEach(id => {
-                                const getReq = store.get(id);
-                                getReq.onsuccess = () => {
-                                  const record = getReq.result;
-                                  if (record) {
-                                    record.synced = true;
-                                    const putReq = store.put(record);
-                                    putReq.onsuccess = () => {
+                          try {
+                            // Consolidated batch write transaction: mark all successful uploads as synced in a single database swipe!
+                            await runSafeIDBWrite((localDb) => {
+                              return new Promise<void>((resolve, reject) => {
+                                const tx = localDb.transaction('texts', 'readwrite');
+                                const store = tx.objectStore('texts');
+                                
+                                let completedCount = 0;
+                                successfulIds.forEach(id => {
+                                  const getReq = store.get(id);
+                                  getReq.onsuccess = () => {
+                                    const record = getReq.result;
+                                    if (record) {
+                                      record.synced = true;
+                                      const putReq = store.put(record);
+                                      putReq.onsuccess = () => {
+                                        completedCount++;
+                                        if (completedCount === successfulIds.length) resolve();
+                                      };
+                                      putReq.onerror = () => reject(putReq.error);
+                                    } else {
                                       completedCount++;
                                       if (completedCount === successfulIds.length) resolve();
-                                    };
-                                    putReq.onerror = () => reject(putReq.error);
-                                  } else {
-                                    completedCount++;
-                                    if (completedCount === successfulIds.length) resolve();
-                                  }
-                                };
-                                getReq.onerror = () => reject(getReq.error);
-                              });
+                                    }
+                                  };
+                                  getReq.onerror = () => reject(getReq.error);
+                                });
 
-                              if (successfulIds.length === 0) {
-                                resolve();
-                              }
+                                if (successfulIds.length === 0) {
+                                  resolve();
+                                }
+                              });
                             });
-                          });
-                          
-                          // Trigger synchronization broadcast exactly once for the entire batch!
-                          notifyTabSync(currentUserId);
-                        } catch (err) {
-                          console.error("Failed to batch save synced state to Local DB:", err);
+                            
+                            // Trigger synchronization broadcast exactly once for the entire batch!
+                            notifyTabSync(currentUserId);
+                          } catch (err) {
+                            console.error("Failed to batch save synced state to Local DB:", err);
+                          }
                         }
 
                       } catch (e) {
-                        console.error("Unified cloud batch upload failed for image items:", e);
+                        console.error("Parallel cloud upload failed for image items:", e);
                       } finally {
                         validItems.forEach(item => trackingActiveUploads.delete(item.id));
                       }
-                    })().catch(err => console.error("Background batch upload failed:", err));
+                    })().catch(err => console.error("Background parallel upload failed:", err));
                   }
 
                   // Revoke object URLs to prevent memory leak
