@@ -3831,22 +3831,21 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                         validItems.forEach(item => trackingActiveUploads.add(item.id));
 
                         // Fire all POST requests concurrently in parallel (at the exact same split-second)!
-                        const uploadResults = await Promise.all(validItems.map(async (item) => {
-                          try {
-                            await appendToGoogleSheet({
-                              action: "ADD",
-                              id: item.id,
-                              userid: item.userId,
-                              text: item.text,
-                              timestamp: item.timestamp,
-                              starred: item.starred ? 1 : 0
-                            });
-                            return item.id;
-                          } catch (e) {
+                        const uploadPromises = validItems.map(item => 
+                          appendToGoogleSheet({
+                            action: "ADD",
+                            id: item.id,
+                            userid: item.userId,
+                            text: item.text,
+                            timestamp: item.timestamp,
+                            starred: item.starred ? 1 : 0
+                          }).then(() => item.id).catch(e => {
                             console.error(`Parallel cloud upload failed for image item ${item.id}:`, e);
                             return null;
-                          }
-                        }));
+                          })
+                        );
+
+                        const uploadResults = await Promise.all(uploadPromises);
 
                         // All parallel uploads completed at the exact same time!
                         const successfulIds = uploadResults.filter((id): id is string => id !== null);
