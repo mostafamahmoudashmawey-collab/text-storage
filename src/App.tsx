@@ -3780,6 +3780,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                     btn.textContent = displayLang === 'ar' ? 'جاري تخزين الصور...' : 'Storing images...';
                   }
 
+                  const batchTimestamp = Date.now();
                   // 1. Process all selected images in parallel for ultra-fast compression. This is local and extremely fast.
                   const itemsToSave: (TextItem | null)[] = new Array(selectedFiles.length).fill(null);
                   await Promise.all(selectedFiles.map(async (file, idx) => {
@@ -3790,7 +3791,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                           id: generateTextId() + "_" + idx,
                           userId: currentUserId,
                           text: compressed,
-                          timestamp: Date.now() + idx,
+                          timestamp: batchTimestamp,
                           synced: false
                         };
                       }
