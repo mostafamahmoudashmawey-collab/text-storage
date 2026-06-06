@@ -3841,8 +3841,6 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                             starred: item.starred ? 1 : 0
                           });
 
-                          // Instantly update the UI item status to "synced = true" as soon as it succeeds!
-                          setTexts(prev => prev.map(t => t.id === item.id ? { ...t, synced: true } : t));
                           return item.id;
                         } catch (e) {
                           console.error(`Parallel cloud upload failed for image item ${item.id}:`, e);
@@ -3854,6 +3852,9 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
 
                       const successfulIds = uploadResults.filter((id): id is string => id !== null);
                       if (successfulIds.length > 0) {
+                        // Mark all processed images as synced in the UI state all at once!
+                        setTexts(prev => prev.map(t => successfulIds.includes(t.id) ? { ...t, synced: true } : t));
+
                         try {
                           // Consolidated batch write transaction: mark all successful uploads as synced in a single database swipe!
                           await runSafeIDBWrite((localDb) => {
