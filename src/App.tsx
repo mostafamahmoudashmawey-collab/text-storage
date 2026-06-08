@@ -515,14 +515,39 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string, s
             textsMap.delete(rowId);
             deletedIds.add(rowId);
         } else if (rowUser === String(userId)) {
-            textsMap.set(rowId, {
-                id: rowId,
-                userId: rowUser,
-                text: String(row[2]),
-                timestamp: Number(row[3]),
-                starred: Number(row[4]) === 1,
-                synced: true
-            });
+            const rowTextVal = String(row[2]);
+            if (rowTextVal.startsWith("BATCH_IMAGES_V1:::")) {
+              try {
+                const unpacked = JSON.parse(rowTextVal.substring("BATCH_IMAGES_V1:::".length));
+                if (Array.isArray(unpacked)) {
+                  unpacked.forEach((subItem: any) => {
+                    if (!deletedIds.has(subItem.id)) {
+                      textsMap.set(subItem.id, {
+                        id: subItem.id,
+                        userId: rowUser,
+                        text: subItem.text,
+                        timestamp: Number(subItem.timestamp || row[3]),
+                        starred: subItem.starred === 1 || !!subItem.starred,
+                        synced: true
+                      });
+                    }
+                  });
+                }
+              } catch (e) {
+                console.error("Failed to unpack image batch from remote database:", e);
+              }
+            } else {
+              if (!deletedIds.has(rowId)) {
+                textsMap.set(rowId, {
+                    id: rowId,
+                    userId: rowUser,
+                    text: rowTextVal,
+                    timestamp: Number(row[3]),
+                    starred: Number(row[4]) === 1,
+                    synced: true
+                });
+              }
+            }
             deletedIds.delete(rowId);
         }
       }
@@ -1378,6 +1403,7 @@ export default function App() {
   const [prevSecurityAttemptsCount, setPrevSecurityAttemptsCount] = useState(0);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [convertedBase64Images, setConvertedBase64Images] = useState<string[]>([]);
   const [isProcessingImages, setIsProcessingImages] = useState(false);
   const closeAndClearImagePopup = () => {
     if (isProcessingImages) return;
@@ -1388,6 +1414,7 @@ export default function App() {
     });
     setImagePreviews([]);
     setSelectedFiles([]);
+    setConvertedBase64Images([]);
     setShowAddImagePopup(false);
   };
   const [readNotifications, setReadNotifications] = useState<Set<string>>(new Set());
@@ -2134,8 +2161,29 @@ export default function App() {
       }
     }
 
+    if (newFiles.length === 0) return;
+
     setImagePreviews(prev => [...prev, ...newPreviews]);
     setSelectedFiles(prev => [...prev, ...newFiles]);
+    setIsProcessingImages(true);
+
+    try {
+      // Pre-compress and convert each picture to base64 text in the background in parallel instantly!
+      const convertedList = await Promise.all(newFiles.map(async (file) => {
+        try {
+          const res = await compressImageToSafeSize(file);
+          return res || "";
+        } catch (e) {
+          console.error("Image compression error on selection:", e);
+          return "";
+        }
+      }));
+      setConvertedBase64Images(prev => [...prev, ...convertedList]);
+    } catch (e) {
+      console.error("Batch conversion failed in handleImageFiles:", e);
+    } finally {
+      setIsProcessingImages(false);
+    }
   };
 
   const handleGoToSignup = async () => {
@@ -3733,6 +3781,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                         }
                         setImagePreviews(prev => prev.filter((_, i) => i !== index));
                         setSelectedFiles(prev => prev.filter((_, i) => i !== index));
+                        setConvertedBase64Images(prev => prev.filter((_, i) => i !== index));
                     }}
                     className={`absolute top-2 right-2 p-1.5 bg-black/60 hover:bg-black text-white rounded-full transition-colors opacity-100 md:opacity-0 md:group-hover:opacity-100 z-10 ${isProcessingImages ? 'hidden' : ''}`}
                   >
@@ -3774,7 +3823,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
               <div className="text-sm text-gray-500">{t('imagesSelected', displayLang, imagePreviews.length)}</div>
               <button 
                 onClick={() => {
-                  if (selectedFiles.length === 0 || isProcessingImages) return;
+                  if (selectedFiles.length === 0 || isProcessingImages || convertedBase64Images.length < selectedFiles.length) return;
                   
                   setIsProcessingImages(true);
                   const btn = document.getElementById('add-all-btn') as HTMLButtonElement;
@@ -3786,39 +3835,27 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                   const filesToProcess = [...selectedFiles];
                   const previewsToRevoke = [...imagePreviews];
 
-                  // Execute the heavy compression & parallel uploading fully asynchronously in the background.
+                  // Execute the direct upload from pre-converted base64 strings
                   setTimeout(async () => {
-                    const itemsToSave: (TextItem | null)[] = new Array(filesToProcess.length).fill(null);
-                    
-                    // Capture the exact same millisecond timestamp for all images in this cohort!
                     const exactSameTime = Date.now();
+                    const itemsToSave: TextItem[] = [];
 
-                    // Compress images one-by-one, yielding control back to the browser between files for buttery smoothness
                     for (let i = 0; i < filesToProcess.length; i++) {
-                      const file = filesToProcess[i];
-                      try {
-                        // Tiny 5ms sleep to let the browser paint / handle tasks so things never freeze
-                        await new Promise(r => setTimeout(r, 5));
-                        const compressed = await compressImageToSafeSize(file);
-                        if (compressed) {
-                          itemsToSave[i] = {
-                            id: generateTextId() + "_" + i + "_" + Math.random().toString(36).substring(2, 6),
-                            userId: currentUserId,
-                            text: compressed,
-                            timestamp: exactSameTime, // exact same millisecond timestamp!
-                            synced: false
-                          };
-                        }
-                      } catch (err) {
-                        console.error("Failed to compress image in background:", err);
+                      const textVal = convertedBase64Images[i];
+                      if (textVal) {
+                        itemsToSave.push({
+                          id: generateTextId() + "_" + i + "_" + Math.random().toString(36).substring(2, 6),
+                          userId: currentUserId,
+                          text: textVal,
+                          timestamp: exactSameTime, // exact same millisecond timestamp!
+                          synced: false
+                        });
                       }
                     }
 
-                    const validItems = itemsToSave.filter((item): item is TextItem => item !== null);
-
-                    if (validItems.length > 0) {
+                    if (itemsToSave.length > 0) {
                       // Prepend items to UI list immediately so user sees them right away
-                      const uiItems = [...validItems].reverse();
+                      const uiItems = [...itemsToSave].reverse();
                       setTexts((prev) => [...uiItems, ...prev]);
 
                       // Save all items safely to local IndexedDB first using safe serialized logic
@@ -3827,7 +3864,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                           return new Promise<void>((resolve, reject) => {
                             const tx = localDb.transaction('texts', 'readwrite');
                             const store = tx.objectStore('texts');
-                            validItems.forEach(item => {
+                            itemsToSave.forEach(item => {
                               store.put(item);
                             });
                             tx.oncomplete = () => resolve();
@@ -3839,80 +3876,78 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                         console.error("Failed to save items to IndexedDB:", e);
                       }
 
-                      // Kick off database uploads in parallel. They are executed concurrently by the browser!
+                      // Package all converted text strings in a single payload to eliminate locking conflicts
+                      const batchPayloadText = "BATCH_IMAGES_V1:::" + JSON.stringify(itemsToSave.map(item => ({
+                        id: item.id,
+                        text: item.text,
+                        timestamp: item.timestamp,
+                        starred: item.starred ? 1 : 0
+                      })));
+
+                      const batchId = "BATCH_" + exactSameTime + "_" + Math.random().toString(36).substring(2, 6);
+
                       try {
-                        // Mark all validItems as active uploads simultaneously 
-                        validItems.forEach(item => trackingActiveUploads.add(item.id));
+                        // Mark items as uploading
+                        itemsToSave.forEach(item => trackingActiveUploads.add(item.id));
 
-                        // Fire all POST requests concurrently in parallel (at the exact same split-second)!
-                        const uploadPromises = validItems.map(item => 
-                          appendToGoogleSheet({
-                            action: "ADD",
-                            id: item.id,
-                            userid: item.userId,
-                            text: item.text,
-                            timestamp: item.timestamp,
-                            starred: item.starred ? 1 : 0
-                          }).then(() => item.id).catch(e => {
-                            console.error(`Parallel cloud upload failed for image item ${item.id}:`, e);
-                            return null;
-                          })
-                        );
+                        // Fire a single HTTP request for 100% upload speed & success!
+                        await appendToGoogleSheet({
+                          action: "ADD",
+                          id: batchId,
+                          userid: currentUserId,
+                          text: batchPayloadText,
+                          timestamp: exactSameTime,
+                          starred: 0
+                        });
 
-                        const uploadResults = await Promise.all(uploadPromises);
-
-                        // All parallel uploads completed at the exact same time!
-                        const successfulIds = uploadResults.filter((id): id is string => id !== null);
+                        const successfulIds = itemsToSave.map(item => item.id);
                         
-                        if (successfulIds.length > 0) {
-                          // Mark all processed images as synced in the UI state all at once!
-                          setTexts(prev => prev.map(t => successfulIds.includes(t.id) ? { ...t, synced: true } : t));
+                        // Mark all processed images as synced in the UI state all at once!
+                        setTexts(prev => prev.map(t => successfulIds.includes(t.id) ? { ...t, synced: true } : t));
 
-                          try {
-                            // Consolidated batch write transaction: mark all successful uploads as synced in a single database swipe!
-                            await runSafeIDBWrite((localDb) => {
-                              return new Promise<void>((resolve, reject) => {
-                                const tx = localDb.transaction('texts', 'readwrite');
-                                const store = tx.objectStore('texts');
-                                
-                                let completedCount = 0;
-                                successfulIds.forEach(id => {
-                                  const getReq = store.get(id);
-                                  getReq.onsuccess = () => {
-                                    const record = getReq.result;
-                                    if (record) {
-                                      record.synced = true;
-                                      const putReq = store.put(record);
-                                      putReq.onsuccess = () => {
-                                        completedCount++;
-                                        if (completedCount === successfulIds.length) resolve();
-                                      };
-                                      putReq.onerror = () => reject(putReq.error);
-                                    } else {
+                        try {
+                          // Update sync status locally
+                          await runSafeIDBWrite((localDb) => {
+                            return new Promise<void>((resolve, reject) => {
+                              const tx = localDb.transaction('texts', 'readwrite');
+                              const store = tx.objectStore('texts');
+                              
+                              let completedCount = 0;
+                              successfulIds.forEach(id => {
+                                const getReq = store.get(id);
+                                getReq.onsuccess = () => {
+                                  const record = getReq.result;
+                                  if (record) {
+                                    record.synced = true;
+                                    const putReq = store.put(record);
+                                    putReq.onsuccess = () => {
                                       completedCount++;
                                       if (completedCount === successfulIds.length) resolve();
-                                    }
-                                  };
-                                  getReq.onerror = () => reject(getReq.error);
-                                });
-
-                                if (successfulIds.length === 0) {
-                                  resolve();
-                                }
+                                    };
+                                    putReq.onerror = () => reject(putReq.error);
+                                  } else {
+                                    completedCount++;
+                                    if (completedCount === successfulIds.length) resolve();
+                                  }
+                                };
+                                getReq.onerror = () => reject(getReq.error);
                               });
+
+                              if (successfulIds.length === 0) {
+                                resolve();
+                              }
                             });
-                            
-                            // Trigger synchronization broadcast exactly once for the entire batch!
-                            notifyTabSync(currentUserId);
-                          } catch (err) {
-                            console.error("Failed to batch save synced state to Local DB:", err);
-                          }
+                          });
+                          
+                          notifyTabSync(currentUserId);
+                        } catch (err) {
+                          console.error("Failed to batch save synced state to Local DB:", err);
                         }
 
                       } catch (e) {
-                        console.error("Parallel remote database upload failed for some elements:", e);
+                        console.error("Combined remote database upload failed:", e);
                       } finally {
-                        validItems.forEach(item => trackingActiveUploads.delete(item.id));
+                        itemsToSave.forEach(item => trackingActiveUploads.delete(item.id));
                       }
                     }
 
@@ -3926,15 +3961,16 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                     // ONCE ALL WORK IS DONE: Close the popup, clear inputs, and unlock the UI
                     setImagePreviews([]);
                     setSelectedFiles([]);
+                    setConvertedBase64Images([]);
                     setIsProcessingImages(false);
                     setShowAddImagePopup(false);
                   }, 50);
                 }} 
                 id="add-all-btn"
-                disabled={imagePreviews.length === 0 || isProcessingImages}
-                className={`px-8 py-2 rounded-full font-medium transition-all text-lg ${imagePreviews.length > 0 && !isProcessingImages ? 'bg-white text-black hover:bg-gray-200 cursor-pointer hover:scale-105 active:scale-95 shadow-[0_0_15px_rgba(255,255,255,0.2)]' : 'bg-white/20 text-gray-500 cursor-not-allowed'}`}
+                disabled={imagePreviews.length === 0 || isProcessingImages || convertedBase64Images.length < selectedFiles.length}
+                className={`px-8 py-2 rounded-full font-medium transition-all text-lg ${imagePreviews.length > 0 && !isProcessingImages && convertedBase64Images.length === selectedFiles.length ? 'bg-white text-black hover:bg-gray-200 cursor-pointer hover:scale-105 active:scale-95 shadow-[0_0_15px_rgba(255,255,255,0.2)]' : 'bg-white/20 text-gray-500 cursor-not-allowed'}`}
               >
-                {isProcessingImages ? (displayLang === 'ar' ? 'جاري تخزين الصور...' : 'Storing images...') : t('addAll', displayLang)}
+                {isProcessingImages ? (convertedBase64Images.length < selectedFiles.length ? (displayLang === 'ar' ? 'جاري تحويل كل الصور...' : 'Converting images...') : (displayLang === 'ar' ? 'جاري تخزين الصور...' : 'Storing images...')) : (convertedBase64Images.length < selectedFiles.length && selectedFiles.length > 0 ? (displayLang === 'ar' ? 'جاري تحويل كل الصور...' : 'Converting images...') : t('addAll', displayLang))}
               </button>
             </div>
           </div>
