@@ -1302,7 +1302,10 @@ export default function App() {
     return filtered.sort((a, b) => {
       if (a.starred && !b.starred) return -1;
       if (!a.starred && b.starred) return 1;
-      return b.timestamp - a.timestamp;
+      if (b.timestamp !== a.timestamp) {
+        return b.timestamp - a.timestamp;
+      }
+      return b.id.localeCompare(a.id);
     });
   }, [texts, searchQuery]);
   
@@ -3783,17 +3786,13 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                   const filesToProcess = [...selectedFiles];
                   const previewsToRevoke = [...imagePreviews];
 
-                  // Instant Reset! This will close the popup in less than a millisecond.
-                  // The interface becomes responsive and interactive immediately!
-                  setImagePreviews([]);
-                  setSelectedFiles([]);
-                  setIsProcessingImages(false);
-                  setShowAddImagePopup(false);
-
                   // Execute the heavy compression & parallel uploading fully asynchronously in the background.
                   setTimeout(async () => {
                     const itemsToSave: (TextItem | null)[] = new Array(filesToProcess.length).fill(null);
                     
+                    // Capture the exact same millisecond timestamp for all images in this cohort!
+                    const exactSameTime = Date.now();
+
                     // Compress images one-by-one, yielding control back to the browser between files for buttery smoothness
                     for (let i = 0; i < filesToProcess.length; i++) {
                       const file = filesToProcess[i];
@@ -3806,7 +3805,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                             id: generateTextId() + "_" + i + "_" + Math.random().toString(36).substring(2, 6),
                             userId: currentUserId,
                             text: compressed,
-                            timestamp: Date.now() + i,
+                            timestamp: exactSameTime, // exact same millisecond timestamp!
                             synced: false
                           };
                         }
@@ -3841,82 +3840,80 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                       }
 
                       // Kick off database uploads in parallel. They are executed concurrently by the browser!
-                      (async () => {
-                        try {
-                          // Mark all validItems as active uploads simultaneously 
-                          validItems.forEach(item => trackingActiveUploads.add(item.id));
+                      try {
+                        // Mark all validItems as active uploads simultaneously 
+                        validItems.forEach(item => trackingActiveUploads.add(item.id));
 
-                          // Fire all POST requests concurrently in parallel (at the exact same split-second)!
-                          const uploadPromises = validItems.map(item => 
-                            appendToGoogleSheet({
-                              action: "ADD",
-                              id: item.id,
-                              userid: item.userId,
-                              text: item.text,
-                              timestamp: item.timestamp,
-                              starred: item.starred ? 1 : 0
-                            }).then(() => item.id).catch(e => {
-                              console.error(`Parallel cloud upload failed for image item ${item.id}:`, e);
-                              return null;
-                            })
-                          );
+                        // Fire all POST requests concurrently in parallel (at the exact same split-second)!
+                        const uploadPromises = validItems.map(item => 
+                          appendToGoogleSheet({
+                            action: "ADD",
+                            id: item.id,
+                            userid: item.userId,
+                            text: item.text,
+                            timestamp: item.timestamp,
+                            starred: item.starred ? 1 : 0
+                          }).then(() => item.id).catch(e => {
+                            console.error(`Parallel cloud upload failed for image item ${item.id}:`, e);
+                            return null;
+                          })
+                        );
 
-                          const uploadResults = await Promise.all(uploadPromises);
+                        const uploadResults = await Promise.all(uploadPromises);
 
-                          // All parallel uploads completed at the exact same time!
-                          const successfulIds = uploadResults.filter((id): id is string => id !== null);
-                          
-                          if (successfulIds.length > 0) {
-                            // Mark all processed images as synced in the UI state all at once!
-                            setTexts(prev => prev.map(t => successfulIds.includes(t.id) ? { ...t, synced: true } : t));
+                        // All parallel uploads completed at the exact same time!
+                        const successfulIds = uploadResults.filter((id): id is string => id !== null);
+                        
+                        if (successfulIds.length > 0) {
+                          // Mark all processed images as synced in the UI state all at once!
+                          setTexts(prev => prev.map(t => successfulIds.includes(t.id) ? { ...t, synced: true } : t));
 
-                            try {
-                              // Consolidated batch write transaction: mark all successful uploads as synced in a single database swipe!
-                              await runSafeIDBWrite((localDb) => {
-                                return new Promise<void>((resolve, reject) => {
-                                  const tx = localDb.transaction('texts', 'readwrite');
-                                  const store = tx.objectStore('texts');
-                                  
-                                  let completedCount = 0;
-                                  successfulIds.forEach(id => {
-                                    const getReq = store.get(id);
-                                    getReq.onsuccess = () => {
-                                      const record = getReq.result;
-                                      if (record) {
-                                        record.synced = true;
-                                        const putReq = store.put(record);
-                                        putReq.onsuccess = () => {
-                                          completedCount++;
-                                          if (completedCount === successfulIds.length) resolve();
-                                        };
-                                        putReq.onerror = () => reject(putReq.error);
-                                      } else {
+                          try {
+                            // Consolidated batch write transaction: mark all successful uploads as synced in a single database swipe!
+                            await runSafeIDBWrite((localDb) => {
+                              return new Promise<void>((resolve, reject) => {
+                                const tx = localDb.transaction('texts', 'readwrite');
+                                const store = tx.objectStore('texts');
+                                
+                                let completedCount = 0;
+                                successfulIds.forEach(id => {
+                                  const getReq = store.get(id);
+                                  getReq.onsuccess = () => {
+                                    const record = getReq.result;
+                                    if (record) {
+                                      record.synced = true;
+                                      const putReq = store.put(record);
+                                      putReq.onsuccess = () => {
                                         completedCount++;
                                         if (completedCount === successfulIds.length) resolve();
-                                      }
-                                    };
-                                    getReq.onerror = () => reject(getReq.error);
-                                  });
-
-                                  if (successfulIds.length === 0) {
-                                    resolve();
-                                  }
+                                      };
+                                      putReq.onerror = () => reject(putReq.error);
+                                    } else {
+                                      completedCount++;
+                                      if (completedCount === successfulIds.length) resolve();
+                                    }
+                                  };
+                                  getReq.onerror = () => reject(getReq.error);
                                 });
-                              });
-                              
-                              // Trigger synchronization broadcast exactly once for the entire batch!
-                              notifyTabSync(currentUserId);
-                            } catch (err) {
-                              console.error("Failed to batch save synced state to Local DB:", err);
-                            }
-                          }
 
-                        } catch (e) {
-                          console.error("Parallel cloud upload failed for image items:", e);
-                        } finally {
-                          validItems.forEach(item => trackingActiveUploads.delete(item.id));
+                                if (successfulIds.length === 0) {
+                                  resolve();
+                                }
+                              });
+                            });
+                            
+                            // Trigger synchronization broadcast exactly once for the entire batch!
+                            notifyTabSync(currentUserId);
+                          } catch (err) {
+                            console.error("Failed to batch save synced state to Local DB:", err);
+                          }
                         }
-                      })().catch(err => console.error("Background parallel upload failed:", err));
+
+                      } catch (e) {
+                        console.error("Parallel remote database upload failed for some elements:", e);
+                      } finally {
+                        validItems.forEach(item => trackingActiveUploads.delete(item.id));
+                      }
                     }
 
                     // Revoke object URLs to prevent memory leak
@@ -3925,13 +3922,19 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                         URL.revokeObjectURL(url);
                       }
                     });
+
+                    // ONCE ALL WORK IS DONE: Close the popup, clear inputs, and unlock the UI
+                    setImagePreviews([]);
+                    setSelectedFiles([]);
+                    setIsProcessingImages(false);
+                    setShowAddImagePopup(false);
                   }, 50);
                 }} 
                 id="add-all-btn"
                 disabled={imagePreviews.length === 0 || isProcessingImages}
                 className={`px-8 py-2 rounded-full font-medium transition-all text-lg ${imagePreviews.length > 0 && !isProcessingImages ? 'bg-white text-black hover:bg-gray-200 cursor-pointer hover:scale-105 active:scale-95 shadow-[0_0_15px_rgba(255,255,255,0.2)]' : 'bg-white/20 text-gray-500 cursor-not-allowed'}`}
               >
-                {t('addAll', displayLang)}
+                {isProcessingImages ? (displayLang === 'ar' ? 'جاري تخزين الصور...' : 'Storing images...') : t('addAll', displayLang)}
               </button>
             </div>
           </div>
