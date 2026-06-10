@@ -1406,7 +1406,8 @@ export default function App() {
   const [prevSecurityAttemptsCount, setPrevSecurityAttemptsCount] = useState(0);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
-  const [convertedBase64Images, setConvertedBase64Images] = useState<string[]>([]);
+  const [convertedBase64Map, setConvertedBase64Map] = useState<Record<string, string>>({});
+  const convertedBase64Images = imagePreviews.map(url => convertedBase64Map[url] || "");
   const [isProcessingImages, setIsProcessingImages] = useState(false);
   const closeAndClearImagePopup = () => {
     if (isProcessingImages) return;
@@ -1417,7 +1418,7 @@ export default function App() {
     });
     setImagePreviews([]);
     setSelectedFiles([]);
-    setConvertedBase64Images([]);
+    setConvertedBase64Map({});
     setShowAddImagePopup(false);
   };
   const [readNotifications, setReadNotifications] = useState<Set<string>>(new Set());
@@ -2170,23 +2171,28 @@ export default function App() {
     setSelectedFiles(prev => [...prev, ...newFiles]);
     setIsProcessingImages(true);
 
-    try {
-      // Pre-compress and convert each picture to base64 text in the background in parallel instantly!
-      const convertedList = await Promise.all(newFiles.map(async (file) => {
-        try {
-          const res = await compressImageToSafeSize(file);
-          return res || "";
-        } catch (e) {
-          console.error("Image compression error on selection:", e);
-          return "";
+    let completedCount = 0;
+    newFiles.forEach(async (file, idx) => {
+      const pUrl = newPreviews[idx];
+      try {
+        const res = await compressImageToSafeSize(file);
+        setConvertedBase64Map(prev => ({
+          ...prev,
+          [pUrl]: res || ""
+        }));
+      } catch (err) {
+        console.error("Image compression error on selection for", file.name, err);
+        setConvertedBase64Map(prev => ({
+          ...prev,
+          [pUrl]: ""
+        }));
+      } finally {
+        completedCount++;
+        if (completedCount === newFiles.length) {
+          setIsProcessingImages(false);
         }
-      }));
-      setConvertedBase64Images(prev => [...prev, ...convertedList]);
-    } catch (e) {
-      console.error("Batch conversion failed in handleImageFiles:", e);
-    } finally {
-      setIsProcessingImages(false);
-    }
+      }
+    });
   };
 
   const handleGoToSignup = async () => {
@@ -3772,43 +3778,68 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                 }}
               />
               
-              {imagePreviews.map((preview, index) => (
-                <div key={index} className="relative aspect-square w-full group bg-black/20 rounded-xl overflow-hidden border border-white/10 flex items-center justify-center">
-                  <img 
-                    src={preview} 
-                    alt="Preview" 
-                    className="max-w-full max-h-full object-contain"
-                    referrerPolicy="no-referrer" 
-                  />
-                  {!convertedBase64Images[index] && (
-                    <div className="absolute inset-x-0 bottom-0 bg-black/60 py-1 flex items-center justify-center gap-1.5 backdrop-blur-[2px]">
-                      <div className="w-3 h-3 border border-white/20 border-t-white rounded-full animate-spin" />
-                      <span className="text-[10px] text-gray-300 font-medium">
-                        {displayLang === 'ar' ? 'جاري التحويل...' : 'Converting...'}
-                      </span>
+              {imagePreviews.map((preview, index) => {
+                const isConverting = !convertedBase64Map[preview];
+                const isBrowserSupported = !/\.(heic|heif|tiff|tif)$/i.test(selectedFiles[index]?.name || '');
+                const canShowOriginal = isBrowserSupported && preview;
+                const renderSrc = !isConverting ? convertedBase64Map[preview] : (canShowOriginal ? preview : null);
+
+                return (
+                  <div key={index} className="w-full pb-[100%] h-0 relative group bg-white/5 rounded-xl border border-white/10 overflow-hidden shadow-[0_4px_12px_rgba(0,0,0,0.5)]">
+                    <div className="absolute inset-0 flex items-center justify-center p-2">
+                      {renderSrc ? (
+                        <img 
+                          src={renderSrc} 
+                          alt="Preview" 
+                          className="max-w-full max-h-full object-contain rounded-lg select-none pointer-events-none"
+                          referrerPolicy="no-referrer" 
+                        />
+                      ) : (
+                        <div className="flex flex-col items-center gap-2">
+                          <div className="w-6 h-6 border-2 border-cyan-500/20 border-t-cyan-500 rounded-full animate-spin" />
+                          <span className="text-[10px] text-gray-400 font-medium select-none text-center px-1">
+                            {displayLang === 'ar' ? 'جاري التحويل...' : 'Converting...'}
+                          </span>
+                        </div>
+                      )}
                     </div>
-                  )}
-                  <button 
-                    disabled={isProcessingImages}
-                    onClick={(e) => {
+                    
+                    {/* Progress overlay for standard files that are converting in background */}
+                    {isConverting && canShowOriginal && (
+                      <div className="absolute inset-x-0 bottom-0 bg-black/60 py-1 flex items-center justify-center gap-1.5 backdrop-blur-[1px]">
+                        <div className="w-3 h-3 border border-white/25 border-t-white rounded-full animate-spin" />
+                        <span className="text-[9px] text-gray-300 font-medium">
+                          {displayLang === 'ar' ? 'جاري التحويل...' : 'Converting...'}
+                        </span>
+                      </div>
+                    )}
+
+                    <button 
+                      disabled={isProcessingImages}
+                      onClick={(e) => {
                         e.stopPropagation();
                         if (preview.startsWith('blob:')) {
                           URL.revokeObjectURL(preview);
                         }
                         setImagePreviews(prev => prev.filter((_, i) => i !== index));
                         setSelectedFiles(prev => prev.filter((_, i) => i !== index));
-                        setConvertedBase64Images(prev => prev.filter((_, i) => i !== index));
-                    }}
-                    className={`absolute top-2 right-2 p-1.5 bg-black/60 hover:bg-black text-white rounded-full transition-colors opacity-100 md:opacity-0 md:group-hover:opacity-100 z-10 ${isProcessingImages ? 'hidden' : ''}`}
-                  >
-                    <X size={16} />
-                  </button>
-                </div>
-              ))}
+                        setConvertedBase64Map(prev => {
+                          const next = { ...prev };
+                          delete next[preview];
+                          return next;
+                        });
+                      }}
+                      className="absolute top-1.5 right-1.5 p-1 bg-black/75 hover:bg-black text-white rounded-full transition-colors opacity-100 md:opacity-0 md:group-hover:opacity-100 z-10"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                );
+              })}
               
               {imagePreviews.length > 0 && imagePreviews.length < (currentUserId === '22222' ? Infinity : 3) && !isProcessingImages && (
                 <div 
-                  className="aspect-square w-full bg-white/5 hover:bg-white/10 border border-dashed border-white/20 hover:border-white/40 rounded-xl flex flex-col items-center justify-center transition-all cursor-pointer group"
+                  className="w-full pb-[100%] h-0 relative bg-white/5 hover:bg-white/10 border border-dashed border-white/20 hover:border-white/40 rounded-xl transition-all cursor-pointer group"
                   onClick={() => {
                     if (isProcessingImages) return;
                     const input = document.createElement('input');
@@ -3823,7 +3854,9 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                     input.click();
                   }}
                 >
-                  <Plus size={24} className="text-gray-500 group-hover:text-white transition-colors" />
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <Plus size={24} className="text-gray-500 group-hover:text-white transition-colors" />
+                  </div>
                 </div>
               )}
               
@@ -3978,7 +4011,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                     // ONCE ALL WORK IS DONE: Close the popup, clear inputs, and unlock the UI
                     setImagePreviews([]);
                     setSelectedFiles([]);
-                    setConvertedBase64Images([]);
+                    setConvertedBase64Map({});
                     setIsProcessingImages(false);
                     setShowAddImagePopup(false);
                   }, 50);
