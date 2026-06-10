@@ -65,6 +65,13 @@ const appendToGoogleSheet = async (payload: any, retryCount = 0): Promise<any> =
 const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> => {
   return new Promise(async (resolve) => {
     let workingFileOrUrl = fileOrDataUrl;
+    const cleanUpUrls: string[] = [];
+    const resolveWithCleanup = (val: string) => {
+      cleanUpUrls.forEach(url => {
+        try { URL.revokeObjectURL(url); } catch (e) {}
+      });
+      resolve(val);
+    };
     
     // Convert HEIC/HEIF/unsupported formats dynamically on the client-side
     if (fileOrDataUrl instanceof File) {
@@ -76,8 +83,8 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
       // Just convert to base64 DataURL immediately. This is incredibly fast and preserves pristine 100% original quality.
       if (fileOrDataUrl.size <= 32500 && !isSpecialFormat) {
         const reader = new FileReader();
-        reader.onload = (e) => resolve(e.target?.result as string || '');
-        reader.onerror = () => resolve('');
+        reader.onload = (e) => resolveWithCleanup(e.target?.result as string || '');
+        reader.onerror = () => resolveWithCleanup('');
         reader.readAsDataURL(fileOrDataUrl);
         return;
       }
@@ -156,13 +163,13 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
       for (const step of steps) {
         const res = compressSinglePass(step.maxDim, step.quality);
         if (res.length <= 44000) {
-          resolve(res);
+          resolveWithCleanup(res);
           return;
         }
       }
 
       // Absolute mathematically safe 50px backup
-      resolve(compressSinglePass(50, 0.05));
+      resolveWithCleanup(compressSinglePass(50, 0.05));
     };
 
     if (typeof workingFileOrUrl === 'string') {
@@ -171,29 +178,48 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
       img.onerror = () => {
         // Fallback: If image loading fails, return only if it fits the size constraints, never chop
         if (workingFileOrUrl.length <= 44000) {
-          resolve(workingFileOrUrl);
+          resolveWithCleanup(workingFileOrUrl);
         } else {
-          resolve('');
+          resolveWithCleanup('');
         }
       };
       img.src = workingFileOrUrl;
     } else {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const resultStr = e.target?.result as string || '';
+      // workingFileOrUrl is a File or Blob. Load it securely via tiny Object URL cache instead of massive base64 CPU overhead, resolving mobile crash
+      try {
+        const tempBlobUrl = URL.createObjectURL(workingFileOrUrl);
+        cleanUpUrls.push(tempBlobUrl);
         const img = new Image();
         img.onload = () => handleLoadedImage(img);
         img.onerror = () => {
-          if (resultStr.length <= 44000) {
-            resolve(resultStr);
+          // If loading via blob fails, fallback to FileReader as absolute last resort
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            const base64Str = e.target?.result as string || '';
+            if (base64Str.length <= 44000) {
+              resolveWithCleanup(base64Str);
+            } else {
+              resolveWithCleanup('');
+            }
+          };
+          reader.onerror = () => resolveWithCleanup('');
+          reader.readAsDataURL(workingFileOrUrl as Blob);
+        };
+        img.src = tempBlobUrl;
+      } catch (err) {
+        console.error("Local object URL creation failed, fallback to reader", err);
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const base64Str = e.target?.result as string || '';
+          if (base64Str.length <= 44000) {
+            resolveWithCleanup(base64Str);
           } else {
-            resolve('');
+            resolveWithCleanup('');
           }
         };
-        img.src = resultStr;
-      };
-      reader.onerror = () => resolve('');
-      reader.readAsDataURL(workingFileOrUrl as Blob || workingFileOrUrl);
+        reader.onerror = () => resolveWithCleanup('');
+        reader.readAsDataURL(workingFileOrUrl as Blob || workingFileOrUrl);
+      }
     }
   });
 };
@@ -3755,7 +3781,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
             </div>
             
             <div 
-              className={`w-full min-h-[16rem] bg-white/5 border border-dashed border-white/20 hover:border-white/40 rounded-2xl transition-colors relative p-4 ${imagePreviews.length === 0 ? 'flex flex-col items-center justify-center overflow-y-auto' : 'grid grid-cols-2 md:grid-cols-5 gap-4 overflow-y-auto items-start'}`}
+              className={`w-full min-h-[16rem] bg-white/5 border border-dashed border-white/20 hover:border-white/40 rounded-2xl transition-colors relative p-4 ${imagePreviews.length === 0 ? 'flex flex-col items-center justify-center overflow-y-auto' : 'grid grid-cols-2 md:grid-cols-4 gap-4 overflow-y-auto items-start max-h-[42vh]'}`}
               onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
               onDrop={(e) => {
                 e.preventDefault(); e.stopPropagation();
@@ -3785,7 +3811,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                 const renderSrc = !isConverting ? convertedBase64Map[preview] : (canShowOriginal ? preview : null);
 
                 return (
-                  <div key={index} className="w-full pb-[100%] h-0 relative group bg-white/5 rounded-xl border border-white/10 overflow-hidden shadow-[0_4px_12px_rgba(0,0,0,0.5)]">
+                  <div key={index} className="aspect-square w-full relative group bg-white/5 rounded-xl border border-white/10 overflow-hidden shadow-[0_4px_12px_rgba(0,0,0,0.5)]">
                     <div className="absolute inset-0 flex items-center justify-center p-2">
                       {renderSrc ? (
                         <img 
@@ -3839,7 +3865,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
               
               {imagePreviews.length > 0 && imagePreviews.length < (currentUserId === '22222' ? Infinity : 3) && !isProcessingImages && (
                 <div 
-                  className="w-full pb-[100%] h-0 relative bg-white/5 hover:bg-white/10 border border-dashed border-white/20 hover:border-white/40 rounded-xl transition-all cursor-pointer group"
+                  className="aspect-square w-full relative bg-white/5 hover:bg-white/10 border border-dashed border-white/20 hover:border-white/40 rounded-xl transition-all cursor-pointer group"
                   onClick={() => {
                     if (isProcessingImages) return;
                     const input = document.createElement('input');
@@ -3925,30 +3951,47 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                         console.error("Failed to save items to IndexedDB:", e);
                       }
 
+                      const successfulIds: string[] = [];
+
                       try {
                         // Mark items as uploading
                         itemsToSave.forEach(item => trackingActiveUploads.add(item.id));
 
-                        // Fire concurrent individual sheet requests in parallel to store each image in its own row/cell
-                        const uploadPromises = itemsToSave.map(item => 
-                          appendToGoogleSheet({
-                            action: "ADD",
-                            id: item.id,
-                            userid: item.userId,
-                            text: item.text,
-                            timestamp: item.timestamp,
-                            starred: item.starred ? 1 : 0
-                          }).then(() => item.id).catch(err => {
-                            console.error(`Individual remote database upload failed for image item ${item.id}:`, err);
-                            return null;
-                          })
-                        );
+                        // Sequence them step by step to avoid Google Sheet concurrency limits or lockouts, and track them
+                        for (let index = 0; index < itemsToSave.length; index++) {
+                          const item = itemsToSave[index];
+                          
+                          // Optional tiny delay to let separate requests land nicely but within the same second/moment
+                          if (index > 0) {
+                            await new Promise(r => setTimeout(r, 150));
+                          }
 
-                        const uploadResults = await Promise.all(uploadPromises);
+                          // Update progress label on the "Add all" button dynamically to keep user informed!
+                          const btn = document.getElementById('add-all-btn') as HTMLButtonElement;
+                          if (btn) {
+                            btn.textContent = displayLang === 'ar' 
+                              ? `جاري حفظ الصورة ${index + 1} من ${itemsToSave.length}...` 
+                              : `Storing image ${index + 1} of ${itemsToSave.length}...`;
+                          }
 
-                        // All parallel uploads completed at almost the exact same microsecond!
-                        const successfulIds = uploadResults.filter((id): id is string => id !== null);
-                        
+                          try {
+                            // Slightly shift timestamp by 20 milliseconds so sorting orders them perfectly within the exact same second!
+                            const offsetTimestamp = item.timestamp + (index * 20);
+
+                            await appendToGoogleSheet({
+                              action: "ADD",
+                              id: item.id,
+                              userid: item.userId,
+                              text: item.text,
+                              timestamp: offsetTimestamp,
+                              starred: item.starred ? 1 : 0
+                            });
+                            successfulIds.push(item.id);
+                          } catch (err) {
+                            console.error(`Sequential DB upload failed for image item ${item.id}:`, err);
+                          }
+                        }
+
                         // Mark successful images as synced in the UI state instantly!
                         if (successfulIds.length > 0) {
                           setTexts(prev => prev.map(t => successfulIds.includes(t.id) ? { ...t, synced: true } : t));
