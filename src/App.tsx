@@ -66,11 +66,15 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
   return new Promise(async (resolve) => {
     let workingFileOrUrl = fileOrDataUrl;
     
-    // Convert HEIC/HEIF dynamically on the client-side
+    // Convert HEIC/HEIF/unsupported formats dynamically on the client-side
     if (fileOrDataUrl instanceof File) {
-      // 1. If physical size is extremely small (under ~32.5KB), do NOT compress at all! Just convert to base64 DataURL immediately.
-      // This is incredibly fast (0ms canvas operations) and preserves pristine 100% original quality
-      if (fileOrDataUrl.size <= 32500) {
+      const ext = fileOrDataUrl.name?.toLowerCase() || '';
+      const isHeic = ext.endsWith('.heic') || ext.endsWith('.heif') || fileOrDataUrl.type === 'image/heic' || fileOrUrlTypeIsHeic(fileOrDataUrl);
+      const isSpecialFormat = isHeic || ext.endsWith('.tiff') || ext.endsWith('.tif') || ext.endsWith('.bmp');
+
+      // 1. If physical size is extremely small (under ~32.5KB) and NOT a special browser-unsupported format, do NOT compress at all!
+      // Just convert to base64 DataURL immediately. This is incredibly fast and preserves pristine 100% original quality.
+      if (fileOrDataUrl.size <= 32500 && !isSpecialFormat) {
         const reader = new FileReader();
         reader.onload = (e) => resolve(e.target?.result as string || '');
         reader.onerror = () => resolve('');
@@ -78,8 +82,7 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
         return;
       }
 
-      const ext = fileOrDataUrl.name?.toLowerCase() || '';
-      if (ext.endsWith('.heic') || ext.endsWith('.heif') || fileOrDataUrl.type === 'image/heic' || fileOrUrlTypeIsHeic(fileOrDataUrl)) {
+      if (isHeic) {
         try {
           // Dynamic import of heic2any
           let h2a = (window as any).heic2any;
@@ -138,56 +141,56 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
         return dataUrl;
       };
 
-      // Attempt 1: Premium High Resolution & Supreme Quality (1250px max, 0.90 quality) - absolute pristine crispness
-      let finalDataUrl = compressSinglePass(1250, 0.90);
-      if (finalDataUrl.length <= 44000) {
-        resolve(finalDataUrl);
-        return;
+      // Define safe, progressive downscaling steps to stay under 44KB without slicing (corrupting) strings!
+      const steps = [
+        { maxDim: 1250, quality: 0.90 },
+        { maxDim: 1000, quality: 0.80 },
+        { maxDim: 750,  quality: 0.65 },
+        { maxDim: 500,  quality: 0.50 },
+        { maxDim: 350,  quality: 0.40 },
+        { maxDim: 250,  quality: 0.30 },
+        { maxDim: 150,  quality: 0.20 },
+        { maxDim: 100,  quality: 0.10 }
+      ];
+
+      for (const step of steps) {
+        const res = compressSinglePass(step.maxDim, step.quality);
+        if (res.length <= 44000) {
+          resolve(res);
+          return;
+        }
       }
 
-      // Attempt 2: High Resolution & Vivid Colors (1000px max, 0.80 quality)
-      finalDataUrl = compressSinglePass(1000, 0.80);
-      if (finalDataUrl.length <= 44000) {
-        resolve(finalDataUrl);
-        return;
-      }
-
-      // Attempt 3: Standard High Quality Fallback (750px max, 0.65 quality)
-      finalDataUrl = compressSinglePass(750, 0.65);
-      if (finalDataUrl.length <= 44000) {
-        resolve(finalDataUrl);
-        return;
-      }
-
-      // Attempt 4: Compact High Quality Fallback (500px max, 0.50 quality)
-      finalDataUrl = compressSinglePass(500, 0.50);
-      if (finalDataUrl.length <= 44000) {
-        resolve(finalDataUrl);
-        return;
-      }
-
-      // Attempt 5: Safe low-space fallback (350px max, 0.40 quality)
-      finalDataUrl = compressSinglePass(350, 0.40);
-      resolve(finalDataUrl.slice(0, 44000));
+      // Absolute mathematically safe 50px backup
+      resolve(compressSinglePass(50, 0.05));
     };
 
     if (typeof workingFileOrUrl === 'string') {
       const img = new Image();
       img.onload = () => handleLoadedImage(img);
       img.onerror = () => {
-        // Fallback: If image loading fails, return sliced string
-        resolve(workingFileOrUrl.slice(0, 44000));
+        // Fallback: If image loading fails, return only if it fits the size constraints, never chop
+        if (workingFileOrUrl.length <= 44000) {
+          resolve(workingFileOrUrl);
+        } else {
+          resolve('');
+        }
       };
       img.src = workingFileOrUrl;
     } else {
       const reader = new FileReader();
       reader.onload = (e) => {
+        const resultStr = e.target?.result as string || '';
         const img = new Image();
         img.onload = () => handleLoadedImage(img);
         img.onerror = () => {
-          resolve((e.target?.result as string || '').slice(0, 44000));
+          if (resultStr.length <= 44000) {
+            resolve(resultStr);
+          } else {
+            resolve('');
+          }
         };
-        img.src = e.target?.result as string;
+        img.src = resultStr;
       };
       reader.onerror = () => resolve('');
       reader.readAsDataURL(workingFileOrUrl as Blob || workingFileOrUrl);
@@ -3772,7 +3775,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
               {imagePreviews.map((preview, index) => (
                 <div key={index} className="relative aspect-square w-full group bg-black/20 rounded-xl overflow-hidden border border-white/10 flex items-center justify-center">
                   <img 
-                    src={convertedBase64Images[index] || preview} 
+                    src={preview} 
                     alt="Preview" 
                     className="max-w-full max-h-full object-contain"
                     referrerPolicy="no-referrer" 
