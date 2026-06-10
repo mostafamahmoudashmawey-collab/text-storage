@@ -1517,6 +1517,10 @@ export default function App() {
 
   useEffect(() => {
     const checkCooldown = () => {
+      if (showAddImagePopup) {
+        setImageCooldownRemaining(0);
+        return;
+      }
       if (!currentUserId || texts.length === 0) {
         setImageCooldownRemaining(0);
         return;
@@ -1546,7 +1550,7 @@ export default function App() {
     checkCooldown();
     const interval = setInterval(checkCooldown, 1000);
     return () => clearInterval(interval);
-  }, [texts, currentUserId]);
+  }, [texts, currentUserId, showAddImagePopup]);
 
   const [showEditTextPopup, setShowEditTextPopup] = useState(false);
   const [editTextItem, setEditTextItem] = useState<TextItem | null>(null);
@@ -3976,7 +3980,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
 
                           try {
                             // Slightly shift timestamp by 20 milliseconds so sorting orders them perfectly within the exact same second!
-                            const offsetTimestamp = item.timestamp + (index * 20);
+                            const offsetTimestamp = Date.now() + (index * 20);
 
                             await appendToGoogleSheet({
                               action: "ADD",
@@ -3992,9 +3996,20 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                           }
                         }
 
-                        // Mark successful images as synced in the UI state instantly!
+                        // Mark successful images as synced and update their timestamp to the actual completion time in the UI state instantly!
                         if (successfulIds.length > 0) {
-                          setTexts(prev => prev.map(t => successfulIds.includes(t.id) ? { ...t, synced: true } : t));
+                          const completionTime = Date.now();
+                          setTexts(prev => prev.map(t => {
+                            if (successfulIds.includes(t.id)) {
+                              const indexInSaved = itemsToSave.findIndex(item => item.id === t.id);
+                              return { 
+                                ...t, 
+                                synced: true,
+                                timestamp: completionTime + (indexInSaved >= 0 ? indexInSaved * 20 : 0)
+                              };
+                            }
+                            return t;
+                          }));
 
                           try {
                             // Update sync status locally in IndexedDB in one clean run
@@ -4009,7 +4024,9 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                                   getReq.onsuccess = () => {
                                     const record = getReq.result;
                                     if (record) {
+                                      const indexInSaved = itemsToSave.findIndex(item => item.id === id);
                                       record.synced = true;
+                                      record.timestamp = completionTime + (indexInSaved >= 0 ? indexInSaved * 20 : 0);
                                       const putReq = store.put(record);
                                       putReq.onsuccess = () => {
                                         completedCount++;
