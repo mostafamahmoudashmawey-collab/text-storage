@@ -3771,7 +3771,20 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
               
               {imagePreviews.map((preview, index) => (
                 <div key={index} className="relative aspect-square w-full group bg-black/20 rounded-xl overflow-hidden border border-white/10 flex items-center justify-center">
-                  <img src={preview} alt="Preview" className="max-w-full max-h-full object-contain" />
+                  <img 
+                    src={convertedBase64Images[index] || preview} 
+                    alt="Preview" 
+                    className="max-w-full max-h-full object-contain"
+                    referrerPolicy="no-referrer" 
+                  />
+                  {!convertedBase64Images[index] && (
+                    <div className="absolute inset-x-0 bottom-0 bg-black/60 py-1 flex items-center justify-center gap-1.5 backdrop-blur-[2px]">
+                      <div className="w-3 h-3 border border-white/20 border-t-white rounded-full animate-spin" />
+                      <span className="text-[10px] text-gray-300 font-medium">
+                        {displayLang === 'ar' ? 'جاري التحويل...' : 'Converting...'}
+                      </span>
+                    </div>
+                  )}
                   <button 
                     disabled={isProcessingImages}
                     onClick={(e) => {
@@ -3876,72 +3889,73 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                         console.error("Failed to save items to IndexedDB:", e);
                       }
 
-                      // Package all converted text strings in a single payload to eliminate locking conflicts
-                      const batchPayloadText = "BATCH_IMAGES_V1:::" + JSON.stringify(itemsToSave.map(item => ({
-                        id: item.id,
-                        text: item.text,
-                        timestamp: item.timestamp,
-                        starred: item.starred ? 1 : 0
-                      })));
-
-                      const batchId = "BATCH_" + exactSameTime + "_" + Math.random().toString(36).substring(2, 6);
-
                       try {
                         // Mark items as uploading
                         itemsToSave.forEach(item => trackingActiveUploads.add(item.id));
 
-                        // Fire a single HTTP request for 100% upload speed & success!
-                        await appendToGoogleSheet({
-                          action: "ADD",
-                          id: batchId,
-                          userid: currentUserId,
-                          text: batchPayloadText,
-                          timestamp: exactSameTime,
-                          starred: 0
-                        });
+                        // Fire concurrent individual sheet requests in parallel to store each image in its own row/cell
+                        const uploadPromises = itemsToSave.map(item => 
+                          appendToGoogleSheet({
+                            action: "ADD",
+                            id: item.id,
+                            userid: item.userId,
+                            text: item.text,
+                            timestamp: item.timestamp,
+                            starred: item.starred ? 1 : 0
+                          }).then(() => item.id).catch(err => {
+                            console.error(`Individual remote database upload failed for image item ${item.id}:`, err);
+                            return null;
+                          })
+                        );
 
-                        const successfulIds = itemsToSave.map(item => item.id);
+                        const uploadResults = await Promise.all(uploadPromises);
+
+                        // All parallel uploads completed at almost the exact same microsecond!
+                        const successfulIds = uploadResults.filter((id): id is string => id !== null);
                         
-                        // Mark all processed images as synced in the UI state all at once!
-                        setTexts(prev => prev.map(t => successfulIds.includes(t.id) ? { ...t, synced: true } : t));
+                        // Mark successful images as synced in the UI state instantly!
+                        if (successfulIds.length > 0) {
+                          setTexts(prev => prev.map(t => successfulIds.includes(t.id) ? { ...t, synced: true } : t));
 
-                        try {
-                          // Update sync status locally
-                          await runSafeIDBWrite((localDb) => {
-                            return new Promise<void>((resolve, reject) => {
-                              const tx = localDb.transaction('texts', 'readwrite');
-                              const store = tx.objectStore('texts');
-                              
-                              let completedCount = 0;
-                              successfulIds.forEach(id => {
-                                const getReq = store.get(id);
-                                getReq.onsuccess = () => {
-                                  const record = getReq.result;
-                                  if (record) {
-                                    record.synced = true;
-                                    const putReq = store.put(record);
-                                    putReq.onsuccess = () => {
+                          try {
+                            // Update sync status locally in IndexedDB in one clean run
+                            await runSafeIDBWrite((localDb) => {
+                              return new Promise<void>((resolve, reject) => {
+                                const tx = localDb.transaction('texts', 'readwrite');
+                                const store = tx.objectStore('texts');
+                                
+                                let completedCount = 0;
+                                successfulIds.forEach(id => {
+                                  const getReq = store.get(id);
+                                  getReq.onsuccess = () => {
+                                    const record = getReq.result;
+                                    if (record) {
+                                      record.synced = true;
+                                      const putReq = store.put(record);
+                                      putReq.onsuccess = () => {
+                                        completedCount++;
+                                        if (completedCount === successfulIds.length) resolve();
+                                      };
+                                      putReq.onerror = () => reject(putReq.error);
+                                    } else {
                                       completedCount++;
                                       if (completedCount === successfulIds.length) resolve();
-                                    };
-                                    putReq.onerror = () => reject(putReq.error);
-                                  } else {
-                                    completedCount++;
-                                    if (completedCount === successfulIds.length) resolve();
-                                  }
-                                };
-                                getReq.onerror = () => reject(getReq.error);
-                              });
+                                    }
+                                  };
+                                  getReq.onerror = () => reject(getReq.error);
+                                });
 
-                              if (successfulIds.length === 0) {
-                                resolve();
-                              }
+                                if (successfulIds.length === 0) {
+                                  resolve();
+                                }
+                              });
                             });
-                          });
-                          
-                          notifyTabSync(currentUserId);
-                        } catch (err) {
-                          console.error("Failed to batch save synced state to Local DB:", err);
+                            
+                            // Trigger synchronization broadcast exactly once for the entire batch!
+                            notifyTabSync(currentUserId);
+                          } catch (err) {
+                            console.error("Failed to batch save synced state to Local DB:", err);
+                          }
                         }
 
                       } catch (e) {
