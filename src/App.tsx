@@ -64,9 +64,19 @@ const appendToGoogleSheet = async (payload: any, retryCount = 0): Promise<any> =
 // Keep original image quality, but safely compress to fit Sheets length constraints beautifully!
 const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> => {
   return new Promise(async (resolve) => {
+    let resolved = false;
+    const timeoutId = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        resolveWithCleanup('');
+      }
+    }, 8000); // 8 seconds absolute safety fallback timeout
+
     let workingFileOrUrl = fileOrDataUrl;
     const cleanUpUrls: string[] = [];
     const resolveWithCleanup = (val: string) => {
+      clearTimeout(timeoutId);
+      resolved = true;
       cleanUpUrls.forEach(url => {
         try { URL.revokeObjectURL(url); } catch (e) {}
       });
@@ -192,12 +202,21 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
         const img = new Image();
         img.onload = () => handleLoadedImage(img);
         img.onerror = () => {
-          // If loading via blob fails, fallback to FileReader as absolute last resort
+          // If loading via blob fails (e.g. inside a restricted iframe), fallback to FileReader and load base64 into Image to safely compress
           const reader = new FileReader();
           reader.onload = (e) => {
             const base64Str = e.target?.result as string || '';
-            if (base64Str.length <= 44000) {
-              resolveWithCleanup(base64Str);
+            if (base64Str) {
+              const fallbackImg = new Image();
+              fallbackImg.onload = () => handleLoadedImage(fallbackImg);
+              fallbackImg.onerror = () => {
+                if (base64Str.length <= 44000) {
+                  resolveWithCleanup(base64Str);
+                } else {
+                  resolveWithCleanup('');
+                }
+              };
+              fallbackImg.src = base64Str;
             } else {
               resolveWithCleanup('');
             }
@@ -211,8 +230,17 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
         const reader = new FileReader();
         reader.onload = (e) => {
           const base64Str = e.target?.result as string || '';
-          if (base64Str.length <= 44000) {
-            resolveWithCleanup(base64Str);
+          if (base64Str) {
+            const fallbackImg = new Image();
+            fallbackImg.onload = () => handleLoadedImage(fallbackImg);
+            fallbackImg.onerror = () => {
+              if (base64Str.length <= 44000) {
+                resolveWithCleanup(base64Str);
+              } else {
+                resolveWithCleanup('');
+              }
+            };
+            fallbackImg.src = base64Str;
           } else {
             resolveWithCleanup('');
           }
@@ -1433,6 +1461,8 @@ export default function App() {
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [convertedBase64Map, setConvertedBase64Map] = useState<Record<string, string>>({});
+  const [originalBase64Map, setOriginalBase64Map] = useState<Record<string, string>>({});
+  const [brokenPreviews, setBrokenPreviews] = useState<Record<string, boolean>>({});
   const convertedBase64Images = imagePreviews.map(url => convertedBase64Map[url] || "");
   const [isProcessingImages, setIsProcessingImages] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
@@ -1447,6 +1477,8 @@ export default function App() {
     setImagePreviews([]);
     setSelectedFiles([]);
     setConvertedBase64Map({});
+    setOriginalBase64Map({});
+    setBrokenPreviews({});
     setUploadProgress(null);
     setShowAddImagePopup(false);
   };
@@ -2193,8 +2225,8 @@ export default function App() {
     const newFiles: File[] = [];
 
     for (const file of targetFiles) {
-      const isImage = file.type.startsWith('image/') || 
-        /\.(jpg|jpeg|png|gif|webp|svg|heic|heif|tiff|bmp|jfif|ico)$/i.test(file.name);
+      const isImage = file.type?.startsWith('image/') || 
+        /\.(jpg|jpeg|jpe|png|gif|webp|svg|heic|heif|tiff|tif|bmp|jfif|ico|raw|nef|cr2|arw|dng)$/i.test(file.name);
 
       if (isImage) {
         // Fast instant Object URL preview
@@ -2210,28 +2242,47 @@ export default function App() {
     setSelectedFiles(prev => [...prev, ...newFiles]);
     setIsProcessingImages(true);
 
-    let completedCount = 0;
-    newFiles.forEach(async (file, idx) => {
+    // Read original files as base64 concurrently for instant iframe-safe display
+    newFiles.forEach((file, idx) => {
       const pUrl = newPreviews[idx];
-      try {
-        const res = await compressImageToSafeSize(file);
-        setConvertedBase64Map(prev => ({
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const base64 = e.target?.result as string || "";
+        setOriginalBase64Map(prev => ({
           ...prev,
-          [pUrl]: res || ""
+          [pUrl]: base64
         }));
-      } catch (err) {
-        console.error("Image compression error on selection for", file.name, err);
-        setConvertedBase64Map(prev => ({
+      };
+      reader.onerror = () => {
+        setOriginalBase64Map(prev => ({
           ...prev,
           [pUrl]: ""
         }));
-      } finally {
-        completedCount++;
-        if (completedCount === newFiles.length) {
-          setIsProcessingImages(false);
+      };
+      reader.readAsDataURL(file);
+    });
+
+    // Process images sequentially to avoid freezing mobile browsers and memory exhaustion
+    (async () => {
+      for (let i = 0; i < newFiles.length; i++) {
+        const file = newFiles[i];
+        const pUrl = newPreviews[i];
+        try {
+          const res = await compressImageToSafeSize(file);
+          setConvertedBase64Map(prev => ({
+            ...prev,
+            [pUrl]: res || ""
+          }));
+        } catch (err) {
+          console.error("Image compression error on selection for", file.name, err);
+          setConvertedBase64Map(prev => ({
+            ...prev,
+            [pUrl]: ""
+          }));
         }
       }
-    });
+      setIsProcessingImages(false);
+    })();
   };
 
   const handleGoToSignup = async () => {
@@ -3794,7 +3845,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
             </div>
             
             <div 
-              className={`w-full min-h-[16rem] bg-white/5 border border-dashed border-white/20 hover:border-white/40 rounded-2xl transition-colors relative p-4 ${imagePreviews.length === 0 ? 'flex flex-col items-center justify-center overflow-y-auto' : 'grid grid-cols-2 md:grid-cols-4 gap-4 overflow-y-auto items-start max-h-[42vh]'}`}
+              className="w-full bg-white/5 border border-dashed border-white/20 hover:border-white/40 rounded-2xl transition-colors relative p-2"
               onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
               onDrop={(e) => {
                 e.preventDefault(); e.stopPropagation();
@@ -3809,7 +3860,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                 multiple
                 disabled={isProcessingImages}
                 accept="image/*, .heic, .heif, .webp, .svg, .bmp, .gif, .png, .jpg, .jpeg, .tiff, .ico" 
-                className={`absolute inset-0 w-full h-full opacity-0 cursor-pointer ${imagePreviews.length > 0 || isProcessingImages ? 'hidden' : ''}`}
+                className={`absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20 ${imagePreviews.length > 0 || isProcessingImages ? 'hidden' : ''}`}
                 onChange={(e) => {
                   if (e.target.files && e.target.files.length > 0) {
                     handleImageFiles(Array.from(e.target.files));
@@ -3817,94 +3868,119 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                 }}
               />
               
-              {imagePreviews.map((preview, index) => {
-                const isConverting = !convertedBase64Map[preview];
-                const isBrowserSupported = !/\.(heic|heif|tiff|tif)$/i.test(selectedFiles[index]?.name || '');
-                const canShowOriginal = isBrowserSupported && preview;
-                const renderSrc = !isConverting ? convertedBase64Map[preview] : (canShowOriginal ? preview : null);
+              <div 
+                className={`w-full min-h-[15rem] overflow-y-auto items-start max-h-[42vh] p-2 ${imagePreviews.length === 0 ? 'flex flex-col items-center justify-center' : 'grid grid-cols-2 md:grid-cols-4 gap-4'}`}
+              >
+                {imagePreviews.map((preview, index) => {
+                  const isConverting = !(preview in convertedBase64Map);
+                  const fileName = selectedFiles[index]?.name || '';
+                  const isUnsupportedByBrowser = /\.(heic|heif|tiff|tif|raw|nef|cr2|arw|dng)$/i.test(fileName);
+                  const isBroken = !!brokenPreviews[preview];
+                  const displaySrc = convertedBase64Map[preview] || originalBase64Map[preview] || ((isUnsupportedByBrowser || isBroken) ? '' : preview);
 
-                return (
-                  <div key={index} className="aspect-square w-full relative group bg-white/5 rounded-xl border border-white/10 overflow-hidden shadow-[0_4px_12px_rgba(0,0,0,0.5)]">
-                    <div className="absolute inset-0 flex items-center justify-center p-2">
-                      {renderSrc ? (
-                        <img 
-                          src={renderSrc} 
-                          alt="Preview" 
-                          className="max-w-full max-h-full object-contain rounded-lg select-none pointer-events-none"
-                          referrerPolicy="no-referrer" 
-                        />
+                  return (
+                    <div key={index} className="aspect-square w-full relative group bg-white/5 rounded-xl border border-white/10 overflow-hidden shadow-[0_4px_12px_rgba(0,0,0,0.5)] flex items-center justify-center">
+                      {displaySrc ? (
+                        <>
+                          <img 
+                            src={displaySrc} 
+                            alt=""
+                            onError={() => {
+                              setBrokenPreviews(prev => ({ ...prev, [preview]: true }));
+                            }}
+                            className="w-full h-full object-cover select-none pointer-events-none"
+                            referrerPolicy="no-referrer" 
+                          />
+                          {isConverting && (
+                            <div className="absolute inset-0 bg-black/40 backdrop-blur-[1px] flex items-center justify-center pointer-events-none z-10">
+                              <div className="bg-[#121214]/90 border border-white/10 px-3 py-1.5 rounded-full flex items-center gap-2 shadow-[0_4px_12px_rgba(0,0,0,0.6)] animate-pulse">
+                                <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                <span className="text-[11px] sm:text-xs text-white font-medium tracking-wide font-sans">
+                                  {displayLang === 'ar' ? 'جاري التحميل...' : 'Loading...'}
+                                </span>
+                              </div>
+                            </div>
+                          )}
+                        </>
                       ) : (
-                        <div className="flex flex-col items-center gap-2">
-                          <div className="w-6 h-6 border-2 border-cyan-500/20 border-t-cyan-500 rounded-full animate-spin" />
-                          <span className="text-[10px] text-gray-400 font-medium select-none text-center px-1">
-                            {displayLang === 'ar' ? 'جاري التحويل...' : 'Converting...'}
-                          </span>
+                        <div className="flex flex-col items-center justify-center gap-2.5 select-none pointer-events-none p-3">
+                          <div className="w-12 h-12 rounded-full bg-white/5 flex items-center justify-center text-white/50 border border-white/10 shadow-[0_4px_12px_rgba(0,0,0,0.2)]">
+                            <ImageIcon size={22} className="text-white/40" />
+                          </div>
+                          {isConverting && (
+                            <div className="bg-[#121214]/90 border border-white/10 px-3 py-1.5 rounded-full flex items-center gap-2 shadow-[0_4px_12px_rgba(0,0,0,0.6)] animate-pulse">
+                              <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                              <span className="text-[11px] sm:text-xs text-white font-medium tracking-wide font-sans">
+                                {displayLang === 'ar' ? 'جاري التحميل...' : 'Loading...'}
+                              </span>
+                            </div>
+                          )}
                         </div>
                       )}
-                    </div>
-                    
-                    {/* Progress overlay for standard files that are converting in background */}
-                    {isConverting && canShowOriginal && (
-                      <div className="absolute inset-x-0 bottom-0 bg-black/60 py-1 flex items-center justify-center gap-1.5 backdrop-blur-[1px]">
-                        <div className="w-3 h-3 border border-white/25 border-t-white rounded-full animate-spin" />
-                        <span className="text-[9px] text-gray-300 font-medium">
-                          {displayLang === 'ar' ? 'جاري التحويل...' : 'Converting...'}
-                        </span>
-                      </div>
-                    )}
 
-                    <button 
-                      disabled={isProcessingImages}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (preview.startsWith('blob:')) {
-                          URL.revokeObjectURL(preview);
+                      <button 
+                        disabled={isProcessingImages}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (preview.startsWith('blob:')) {
+                            URL.revokeObjectURL(preview);
+                          }
+                          setImagePreviews(prev => prev.filter((_, i) => i !== index));
+                          setSelectedFiles(prev => prev.filter((_, i) => i !== index));
+                          setConvertedBase64Map(prev => {
+                            const next = { ...prev };
+                            delete next[preview];
+                            return next;
+                          });
+                          setOriginalBase64Map(prev => {
+                            const next = { ...prev };
+                            delete next[preview];
+                            return next;
+                          });
+                          setBrokenPreviews(prev => {
+                            const next = { ...prev };
+                            delete next[preview];
+                            return next;
+                          });
+                        }}
+                        className="absolute top-1.5 right-1.5 p-1 bg-black/75 hover:bg-black text-white rounded-full transition-colors opacity-100 md:opacity-0 md:group-hover:opacity-100 z-10 cursor-pointer border-none"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  );
+                })}
+                
+                {imagePreviews.length > 0 && imagePreviews.length < (currentUserId === '22222' ? Infinity : 3) && !isProcessingImages && (
+                  <div 
+                    className="aspect-square w-full relative bg-white/5 hover:bg-white/10 border border-dashed border-white/20 hover:border-white/40 rounded-xl transition-all cursor-pointer group"
+                    onClick={() => {
+                      if (isProcessingImages) return;
+                      const input = document.createElement('input');
+                      input.type = 'file';
+                      input.multiple = true;
+                      input.accept = 'image/*, .heic, .heif, .webp, .svg, .bmp, .gif, .png, .jpg, .jpeg, .tiff, .ico';
+                      input.onchange = (e: any) => {
+                        if (e.target.files && e.target.files.length > 0) {
+                          handleImageFiles(Array.from(e.target.files));
                         }
-                        setImagePreviews(prev => prev.filter((_, i) => i !== index));
-                        setSelectedFiles(prev => prev.filter((_, i) => i !== index));
-                        setConvertedBase64Map(prev => {
-                          const next = { ...prev };
-                          delete next[preview];
-                          return next;
-                        });
-                      }}
-                      className="absolute top-1.5 right-1.5 p-1 bg-black/75 hover:bg-black text-white rounded-full transition-colors opacity-100 md:opacity-0 md:group-hover:opacity-100 z-10"
-                    >
-                      <X size={14} />
-                    </button>
+                      };
+                      input.click();
+                    }}
+                  >
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <Plus size={24} className="text-gray-500 group-hover:text-white transition-colors" />
+                    </div>
                   </div>
-                );
-              })}
-              
-              {imagePreviews.length > 0 && imagePreviews.length < (currentUserId === '22222' ? Infinity : 3) && !isProcessingImages && (
-                <div 
-                  className="aspect-square w-full relative bg-white/5 hover:bg-white/10 border border-dashed border-white/20 hover:border-white/40 rounded-xl transition-all cursor-pointer group"
-                  onClick={() => {
-                    if (isProcessingImages) return;
-                    const input = document.createElement('input');
-                    input.type = 'file';
-                    input.multiple = true;
-                    input.accept = 'image/*, .heic, .heif, .webp, .svg, .bmp, .gif, .png, .jpg, .jpeg, .tiff, .ico';
-                    input.onchange = (e: any) => {
-                      if (e.target.files && e.target.files.length > 0) {
-                        handleImageFiles(Array.from(e.target.files));
-                      }
-                    };
-                    input.click();
-                  }}
-                >
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <Plus size={24} className="text-gray-500 group-hover:text-white transition-colors" />
+                )}
+                
+                {imagePreviews.length === 0 && (
+                  <div className="flex flex-col items-center justify-center w-full min-h-[14rem]">
+                    <UploadCloud size={40} strokeWidth={1} className="text-gray-400 mb-2" />
+                    <span className="text-gray-400 font-light text-center">{t('attachOrDragImages', displayLang)}</span>
                   </div>
-                </div>
-              )}
-              
-              {imagePreviews.length === 0 && (
-                <>
-                  <UploadCloud size={40} strokeWidth={1} className="text-gray-400 mb-2" />
-                  <span className="text-gray-400 font-light">{t('attachOrDragImages', displayLang)}</span>
-                </>
-              )}
+                )}
+              </div>
             </div>
             
             <div className="flex justify-between items-center w-full mt-2" dir="rtl">
