@@ -1464,6 +1464,7 @@ export default function App() {
   const [originalBase64Map, setOriginalBase64Map] = useState<Record<string, string>>({});
   const [brokenPreviews, setBrokenPreviews] = useState<Record<string, boolean>>({});
   const convertedBase64Images = imagePreviews.map(url => convertedBase64Map[url] || "");
+  const areAllImagesConverted = imagePreviews.length > 0 && imagePreviews.every(url => url in convertedBase64Map);
   const [isProcessingImages, setIsProcessingImages] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
   const [lastImageUploaderFinishedTime, setLastImageUploaderFinishedTime] = useState<number>(0);
@@ -3987,7 +3988,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
               <div className="text-sm text-gray-500">{t('imagesSelected', displayLang, imagePreviews.length)}</div>
               <button 
                 onClick={() => {
-                  if (selectedFiles.length === 0 || isProcessingImages || convertedBase64Images.length < selectedFiles.length) return;
+                  if (selectedFiles.length === 0 || isProcessingImages || !areAllImagesConverted) return;
                   
                   setIsProcessingImages(true);
                   setUploadProgress({ current: 0, total: selectedFiles.length });
@@ -4173,27 +4174,15 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                   }, 50);
                 }} 
                 id="add-all-btn"
-                disabled={imagePreviews.length === 0 || isProcessingImages || convertedBase64Images.length < selectedFiles.length}
-                className={`px-8 py-2 rounded-full font-medium transition-all text-lg ${imagePreviews.length > 0 && !isProcessingImages && convertedBase64Images.length === selectedFiles.length ? 'bg-white text-black hover:bg-gray-200 cursor-pointer hover:scale-105 active:scale-95 shadow-[0_0_15px_rgba(255,255,255,0.2)]' : 'bg-white/20 text-gray-500 cursor-not-allowed'}`}
+                disabled={imagePreviews.length === 0 || isProcessingImages || !areAllImagesConverted}
+                className={`px-8 py-2 rounded-full font-medium transition-all text-lg ${imagePreviews.length > 0 && !isProcessingImages && areAllImagesConverted ? 'bg-white text-black hover:bg-gray-200 cursor-pointer hover:scale-105 active:scale-95 shadow-[0_0_15px_rgba(255,255,255,0.2)]' : 'bg-white/20 text-gray-500 cursor-not-allowed'}`}
               >
-                {isProcessingImages ? (
-                  convertedBase64Images.length < selectedFiles.length ? (
-                    displayLang === 'ar' ? 'جاري تحويل كل الصور...' : 'Converting images...'
-                  ) : (
-                    uploadProgress ? (
-                      displayLang === 'ar' 
-                        ? `جاري حفظ الصورة ${uploadProgress.current} من ${uploadProgress.total} (المتبقي: ${uploadProgress.total - uploadProgress.current})` 
-                        : `Storing image ${uploadProgress.current} of ${uploadProgress.total} (Remaining: ${uploadProgress.total - uploadProgress.current})`
-                    ) : (
-                      displayLang === 'ar' ? 'جاري تخزين الصور...' : 'Storing images...'
-                    )
-                  )
+                {isProcessingImages && uploadProgress ? (
+                  displayLang === 'ar' 
+                    ? `جاري حفظ الصورة ${uploadProgress.current} من ${uploadProgress.total} (المتبقي: ${uploadProgress.total - uploadProgress.current})` 
+                    : `Storing image ${uploadProgress.current} of ${uploadProgress.total} (Remaining: ${uploadProgress.total - uploadProgress.current})`
                 ) : (
-                  convertedBase64Images.length < selectedFiles.length && selectedFiles.length > 0 ? (
-                    displayLang === 'ar' ? 'جاري تحويل كل الصور...' : 'Converting images...'
-                  ) : (
-                    t('addAll', displayLang)
-                  )
+                  t('addAll', displayLang)
                 )}
               </button>
             </div>
