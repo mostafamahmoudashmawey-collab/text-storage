@@ -210,11 +210,7 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
               const fallbackImg = new Image();
               fallbackImg.onload = () => handleLoadedImage(fallbackImg);
               fallbackImg.onerror = () => {
-                if (base64Str.length <= 44000) {
-                  resolveWithCleanup(base64Str);
-                } else {
-                  resolveWithCleanup('');
-                }
+                resolveWithCleanup(base64Str);
               };
               fallbackImg.src = base64Str;
             } else {
@@ -234,11 +230,7 @@ const compressImageToSafeSize = (fileOrDataUrl: File | string): Promise<string> 
             const fallbackImg = new Image();
             fallbackImg.onload = () => handleLoadedImage(fallbackImg);
             fallbackImg.onerror = () => {
-              if (base64Str.length <= 44000) {
-                resolveWithCleanup(base64Str);
-              } else {
-                resolveWithCleanup('');
-              }
+              resolveWithCleanup(base64Str);
             };
             fallbackImg.src = base64Str;
           } else {
@@ -1463,7 +1455,7 @@ export default function App() {
   const [convertedBase64Map, setConvertedBase64Map] = useState<Record<string, string>>({});
   const [originalBase64Map, setOriginalBase64Map] = useState<Record<string, string>>({});
   const [brokenPreviews, setBrokenPreviews] = useState<Record<string, boolean>>({});
-  const convertedBase64Images = imagePreviews.map(url => convertedBase64Map[url] || "");
+  const convertedBase64Images = imagePreviews.map(url => convertedBase64Map[url] || originalBase64Map[url] || "");
   const areAllImagesConverted = imagePreviews.length > 0 && imagePreviews.every(url => url in convertedBase64Map);
   const [isProcessingImages, setIsProcessingImages] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
