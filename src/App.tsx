@@ -1435,6 +1435,8 @@ export default function App() {
   const [convertedBase64Map, setConvertedBase64Map] = useState<Record<string, string>>({});
   const convertedBase64Images = imagePreviews.map(url => convertedBase64Map[url] || "");
   const [isProcessingImages, setIsProcessingImages] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
+  const [lastImageUploaderFinishedTime, setLastImageUploaderFinishedTime] = useState<number>(0);
   const closeAndClearImagePopup = () => {
     if (isProcessingImages) return;
     imagePreviews.forEach(url => {
@@ -1445,6 +1447,7 @@ export default function App() {
     setImagePreviews([]);
     setSelectedFiles([]);
     setConvertedBase64Map({});
+    setUploadProgress(null);
     setShowAddImagePopup(false);
   };
   const [readNotifications, setReadNotifications] = useState<Set<string>>(new Set());
@@ -1517,24 +1520,30 @@ export default function App() {
 
   useEffect(() => {
     const checkCooldown = () => {
-      if (showAddImagePopup) {
+      if (showAddImagePopup || isProcessingImages) {
         setImageCooldownRemaining(0);
         return;
       }
-      if (!currentUserId || texts.length === 0) {
+      if (!currentUserId) {
         setImageCooldownRemaining(0);
         return;
       }
       // Get all images for the current user
       const userImages = texts.filter(t => t.userId === currentUserId && t.text.startsWith('data:image/'));
-      if (userImages.length === 0) {
+      
+      let latestTimestamp = 0;
+      if (userImages.length > 0) {
+        const latestImage = userImages.reduce((prev, current) => (prev.timestamp > current.timestamp) ? prev : current);
+        latestTimestamp = latestImage.timestamp;
+      }
+      
+      const referenceTimestamp = Math.max(latestTimestamp, lastImageUploaderFinishedTime);
+      if (referenceTimestamp === 0) {
         setImageCooldownRemaining(0);
         return;
       }
-      
-      // Find the most recently added image
-      const latestImage = userImages.reduce((prev, current) => (prev.timestamp > current.timestamp) ? prev : current);
-      const timeElapsed = Date.now() - latestImage.timestamp;
+
+      const timeElapsed = Date.now() - referenceTimestamp;
       
       // 15 seconds cooldown
       if (timeElapsed >= 0 && timeElapsed < 15000) {
@@ -1550,7 +1559,7 @@ export default function App() {
     checkCooldown();
     const interval = setInterval(checkCooldown, 1000);
     return () => clearInterval(interval);
-  }, [texts, currentUserId, showAddImagePopup]);
+  }, [texts, currentUserId, showAddImagePopup, isProcessingImages, lastImageUploaderFinishedTime]);
 
   const [showEditTextPopup, setShowEditTextPopup] = useState(false);
   const [editTextItem, setEditTextItem] = useState<TextItem | null>(null);
@@ -3905,10 +3914,13 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                   if (selectedFiles.length === 0 || isProcessingImages || convertedBase64Images.length < selectedFiles.length) return;
                   
                   setIsProcessingImages(true);
+                  setUploadProgress({ current: 0, total: selectedFiles.length });
                   const btn = document.getElementById('add-all-btn') as HTMLButtonElement;
                   if (btn) {
                     btn.disabled = true;
-                    btn.textContent = displayLang === 'ar' ? 'جاري تخزين الصور...' : 'Storing images...';
+                    btn.textContent = displayLang === 'ar' 
+                      ? `جاري حفظ الصورة 1 من ${selectedFiles.length} (المتبقي: ${selectedFiles.length - 1})...` 
+                      : `Storing image 1 of ${selectedFiles.length} (Remaining: ${selectedFiles.length - 1})...`;
                   }
 
                   const filesToProcess = [...selectedFiles];
@@ -3933,6 +3945,8 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                     }
 
                     if (itemsToSave.length > 0) {
+                      setUploadProgress({ current: 0, total: itemsToSave.length });
+                      
                       // Prepend items to UI list immediately so user sees them right away
                       const uiItems = [...itemsToSave].reverse();
                       setTexts((prev) => [...uiItems, ...prev]);
@@ -3970,12 +3984,16 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                             await new Promise(r => setTimeout(r, 150));
                           }
 
-                          // Update progress label on the "Add all" button dynamically to keep user informed!
-                          const btn = document.getElementById('add-all-btn') as HTMLButtonElement;
-                          if (btn) {
-                            btn.textContent = displayLang === 'ar' 
-                              ? `جاري حفظ الصورة ${index + 1} من ${itemsToSave.length}...` 
-                              : `Storing image ${index + 1} of ${itemsToSave.length}...`;
+                          // Update progress state and button text dynamically to keep user informed in real time!
+                          const progressNum = index + 1;
+                          const remainingCount = itemsToSave.length - progressNum;
+                          setUploadProgress({ current: progressNum, total: itemsToSave.length });
+                          
+                          const innerBtn = document.getElementById('add-all-btn') as HTMLButtonElement;
+                          if (innerBtn) {
+                            innerBtn.textContent = displayLang === 'ar' 
+                              ? `جاري حفظ الصورة ${progressNum} من ${itemsToSave.length} (المتبقي: ${remainingCount})...` 
+                              : `Storing image ${progressNum} of ${itemsToSave.length} (Remaining: ${remainingCount})...`;
                           }
 
                           try {
@@ -4072,15 +4090,35 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                     setImagePreviews([]);
                     setSelectedFiles([]);
                     setConvertedBase64Map({});
+                    setUploadProgress(null);
                     setIsProcessingImages(false);
-                    setShowAddImagePopup(false);
+                    setLastImageUploaderFinishedTime(Date.now()); // Start the 15-second cooldown from here
+                    setShowAddImagePopup(false); // Close window immediately
                   }, 50);
                 }} 
                 id="add-all-btn"
                 disabled={imagePreviews.length === 0 || isProcessingImages || convertedBase64Images.length < selectedFiles.length}
                 className={`px-8 py-2 rounded-full font-medium transition-all text-lg ${imagePreviews.length > 0 && !isProcessingImages && convertedBase64Images.length === selectedFiles.length ? 'bg-white text-black hover:bg-gray-200 cursor-pointer hover:scale-105 active:scale-95 shadow-[0_0_15px_rgba(255,255,255,0.2)]' : 'bg-white/20 text-gray-500 cursor-not-allowed'}`}
               >
-                {isProcessingImages ? (convertedBase64Images.length < selectedFiles.length ? (displayLang === 'ar' ? 'جاري تحويل كل الصور...' : 'Converting images...') : (displayLang === 'ar' ? 'جاري تخزين الصور...' : 'Storing images...')) : (convertedBase64Images.length < selectedFiles.length && selectedFiles.length > 0 ? (displayLang === 'ar' ? 'جاري تحويل كل الصور...' : 'Converting images...') : t('addAll', displayLang))}
+                {isProcessingImages ? (
+                  convertedBase64Images.length < selectedFiles.length ? (
+                    displayLang === 'ar' ? 'جاري تحويل كل الصور...' : 'Converting images...'
+                  ) : (
+                    uploadProgress ? (
+                      displayLang === 'ar' 
+                        ? `جاري حفظ الصورة ${uploadProgress.current} من ${uploadProgress.total} (المتبقي: ${uploadProgress.total - uploadProgress.current})` 
+                        : `Storing image ${uploadProgress.current} of ${uploadProgress.total} (Remaining: ${uploadProgress.total - uploadProgress.current})`
+                    ) : (
+                      displayLang === 'ar' ? 'جاري تخزين الصور...' : 'Storing images...'
+                    )
+                  )
+                ) : (
+                  convertedBase64Images.length < selectedFiles.length && selectedFiles.length > 0 ? (
+                    displayLang === 'ar' ? 'جاري تحويل كل الصور...' : 'Converting images...'
+                  ) : (
+                    t('addAll', displayLang)
+                  )
+                )}
               </button>
             </div>
           </div>
