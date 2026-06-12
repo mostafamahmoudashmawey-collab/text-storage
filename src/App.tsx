@@ -1571,11 +1571,9 @@ export default function App() {
       const timeElapsed = Date.now() - referenceTimestamp;
       
       // 15 seconds cooldown
-      if (timeElapsed >= 0 && timeElapsed < 15000) {
-        setImageCooldownRemaining(Math.ceil((15000 - timeElapsed) / 1000));
-      } else if (timeElapsed < 0 && timeElapsed > -15000) {
-        // Handle slight clock mismatch where someone else's clock is ahead
-        setImageCooldownRemaining(Math.ceil(15 - (timeElapsed / 1000)));
+      if (timeElapsed < 15000) {
+        const seconds = Math.ceil((15000 - timeElapsed) / 1000);
+        setImageCooldownRemaining(Math.min(15, Math.max(0, seconds)));
       } else {
         setImageCooldownRemaining(0);
       }
@@ -2019,6 +2017,7 @@ export default function App() {
     setTexts(prev => prev.filter(t => !selectedTexts.has(t.id)));
     setSelectedTexts(new Set());
     setShowDeleteConfirm(false);
+    setLastImageUploaderFinishedTime(0);
     deleteTextsFromDB(idsToDelete, currentUserId, isAll).catch(e => console.error(e));
   };
 
@@ -2042,6 +2041,7 @@ export default function App() {
       deleteText: async (id: string) => {
         if (!currentUserId) return;
         setTexts((prev) => prev.filter((t) => t.id !== id));
+        setLastImageUploaderFinishedTime(0);
         deleteTextsFromDB([id], currentUserId).catch(e => console.error(e));
       },
       getTexts: async () => {
@@ -2207,8 +2207,8 @@ export default function App() {
   };
 
   const handleImageFiles = async (files: File[]) => {
-    // Process attached images safely under account limits: Max 3 for all, infinite for '22222'!
-    const maxLimit = currentUserId === '22222' ? Infinity : 3;
+    // Process attached images safely under account limits: Max 10 for all accounts
+    const maxLimit = 10;
     const allowedCount = Math.max(0, maxLimit - imagePreviews.length);
     if (allowedCount === 0 || files.length === 0) return;
 
@@ -2377,18 +2377,27 @@ export default function App() {
                 </button>
                 <div className="w-[1px] h-6 sm:h-8 bg-white/10 mx-1 sm:mx-2 pointer-events-none"></div>
 
-                <button
-                  onClick={() => {
-                    if (selectedTexts.size === texts.length) {
-                      setSelectedTexts(new Set());
-                    } else {
-                      setSelectedTexts(new Set(texts.map(t => t.id)));
-                    }
-                  }}
-                  className="px-2 sm:px-4 h-[38px] sm:h-[42px] flex items-center justify-center transition-colors outline-none cursor-pointer text-gray-400 hover:text-white active:scale-95 pointer-events-auto bg-transparent border border-gray-600 hover:border-gray-400 ml-1 sm:ml-2"
-                >
-                  <span className="font-medium text-xs sm:text-base m-0 p-0 leading-none flex items-center justify-center h-full h-fit">All</span>
-                </button>
+                {(() => {
+                  const isAllSelected = selectedTexts.size === texts.length && texts.length > 0;
+                  return (
+                    <button
+                      onClick={() => {
+                        if (selectedTexts.size === texts.length) {
+                          setSelectedTexts(new Set());
+                        } else {
+                          setSelectedTexts(new Set(texts.map(t => t.id)));
+                        }
+                      }}
+                      className={`px-2 sm:px-4 h-[38px] sm:h-[42px] flex items-center justify-center transition-colors outline-none cursor-pointer active:scale-95 pointer-events-auto rounded-xl border ${
+                        isAllSelected 
+                          ? "bg-white/10 text-white border-white hover:bg-white/20" 
+                          : "bg-transparent text-gray-400 hover:text-white border-gray-600 hover:border-gray-400"
+                      } ml-1 sm:ml-2`}
+                    >
+                      <span className="font-medium text-xs sm:text-base m-0 p-0 leading-none flex items-center justify-center h-full h-fit">All</span>
+                    </button>
+                  );
+                })()}
                 <button
                   onClick={() => setShowDeleteConfirm(true)}
                   className="px-2 sm:px-[12px] h-[38px] sm:h-[42px] flex items-center justify-center gap-1 sm:gap-2 transition-colors outline-none cursor-pointer text-red-500 hover:text-red-400 active:scale-95 pointer-events-auto bg-transparent border border-transparent mr-1"
@@ -3944,7 +3953,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                   );
                 })}
                 
-                {imagePreviews.length > 0 && imagePreviews.length < (currentUserId === '22222' ? Infinity : 3) && !isProcessingImages && (
+                {imagePreviews.length > 0 && imagePreviews.length < 10 && !isProcessingImages && (
                   <div 
                     className="aspect-square w-full relative bg-white/5 hover:bg-white/10 border border-dashed border-white/20 hover:border-white/40 rounded-xl transition-all cursor-pointer group"
                     onClick={() => {
