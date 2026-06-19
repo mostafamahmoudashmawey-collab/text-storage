@@ -2482,7 +2482,7 @@ export default function App() {
               <img src="/logo.png" className="relative w-32 h-32 sm:w-36 sm:h-36 rounded-3xl object-cover shadow-[0_0_40px_rgba(34,211,238,0.25)] border border-cyan-500/30 hover:scale-105 duration-500 transition-transform cursor-pointer" alt="Inter Storage Logo" />
             </div>
             <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-white mt-4 font-sans bg-clip-text text-transparent bg-gradient-to-b from-white to-gray-400">Inter Storage</h1>
-            <p className="text-gray-400 text-sm leading-relaxed max-w-[280px]">
+            <p className="text-gray-400 text-sm leading-relaxed max-w-[280px]" dir={displayLang === 'ar' ? 'rtl' : 'ltr'}>
               {displayLang === 'ar' ? "المنصة العالمية لحفظ وتخزين كافة النصوص والصور بأمان تام وسرعة فائقة." : "The global platform to save and store all texts and images securely and extremely fast."}
             </p>
           </div>
