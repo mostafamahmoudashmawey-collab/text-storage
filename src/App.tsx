@@ -2453,9 +2453,10 @@ export default function App() {
       reader.readAsDataURL(file);
     });
 
-    // Process images in parallel for blazing-fast loading speeds
+    // Process images sequentially to avoid freezing mobile browsers and memory exhaustion
     (async () => {
-      await Promise.all(newFiles.map(async (file, i) => {
+      for (let i = 0; i < newFiles.length; i++) {
+        const file = newFiles[i];
         const pUrl = newPreviews[i];
         try {
           const res = await compressImageToSafeSize(file);
@@ -2470,7 +2471,7 @@ export default function App() {
             [pUrl]: ""
           }));
         }
-      }));
+      }
       setIsProcessingImages(false);
     })();
   };
@@ -4267,30 +4268,15 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                         // Mark items as uploading
                         itemsToSave.forEach(item => trackingActiveUploads.add(item.id));
 
-                        // Upload them in parallel for blazing fast database insertions!
-                        let completedCount = 0;
-                        const updateProgressUI = () => {
-                          completedCount++;
-                          const progressNum = completedCount;
-                          const remainingCount = itemsToSave.length - progressNum;
-                          setUploadProgress({ current: progressNum, total: itemsToSave.length });
-                          
-                          const innerBtn = document.getElementById('add-all-btn') as HTMLButtonElement;
-                          if (innerBtn) {
-                            innerBtn.textContent = displayLang === 'ar' 
-                              ? `جاري حفظ الصورة ${progressNum} من ${itemsToSave.length} (المتبقي: ${remainingCount})...` 
-                              : `Storing image ${progressNum} of ${itemsToSave.length} (Remaining: ${remainingCount})...`;
-                          }
-                        };
+                        // Track completed count for updating progress in real-time
+                        let completedParallelCount = 0;
 
-                        await Promise.all(itemsToSave.map(async (item, index) => {
+                        // Start all image uploads concurrently but with a 250ms staggered launch delay
+                        const uploadPromises = itemsToSave.map(async (item, index) => {
+                          // Wait for staggered delay of 250ms per index
+                          await new Promise(resolve => setTimeout(resolve, index * 250));
+
                           try {
-                            // Introduce a progressive staggered delay of 180ms per image to absolutely guarantee Google Sheet locks do not collide,
-                            // while maintaining a blistering-fast experience that saves absolutely everything!
-                            if (index > 0) {
-                              await new Promise(r => setTimeout(r, index * 180));
-                            }
-
                             // Slightly shift timestamp by 20 milliseconds so sorting orders them perfectly within the exact same second!
                             const offsetTimestamp = Date.now() + (index * 20);
 
@@ -4304,11 +4290,24 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                             });
                             successfulIds.push(item.id);
                           } catch (err) {
-                            console.error(`Parallel staggered DB upload failed for image item ${item.id}:`, err);
+                            console.error(`Parallel DB upload failed for image item ${item.id}:`, err);
                           } finally {
-                            updateProgressUI();
+                            completedParallelCount++;
+                            const progressNum = completedParallelCount;
+                            const remainingCount = itemsToSave.length - progressNum;
+                            setUploadProgress({ current: progressNum, total: itemsToSave.length });
+                            
+                            const innerBtn = document.getElementById('add-all-btn') as HTMLButtonElement;
+                            if (innerBtn) {
+                              innerBtn.textContent = displayLang === 'ar' 
+                                ? `جاري حفظ الصورة ${progressNum} من ${itemsToSave.length} (المتبقي: ${remainingCount})...` 
+                                : `Storing image ${progressNum} of ${itemsToSave.length} (Remaining: ${remainingCount})...`;
+                            }
                           }
-                        }));
+                        });
+
+                        // Await for all staggered parallel uploads to complete
+                        await Promise.all(uploadPromises);
 
                         // Mark successful images as synced and update their timestamp to the actual completion time in the UI state instantly!
                         if (successfulIds.length > 0) {
