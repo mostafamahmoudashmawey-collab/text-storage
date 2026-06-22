@@ -8,7 +8,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { sendP2P } from './p2p';
 import { t, Language } from './i18n';
 
-const GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbyiEns9GDoPmwDTKM7WdmMghaKrB_K_QQ2CBuW__0CyZC2GS-axQOSC0H4WrUoW2A2xPQ/exec";
+const GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbxh0KRw5BK15YzdNwn3RnJG_CjkZcn7Miwcsc1ISHsnSoVLaRtVWP3pXUaTihJjE3vOog/exec";
 
 // Fetch all rows from the Google Sheet
 const fetchAllGoogleSheetRows = async (retryCount = 0): Promise<any[][]> => {
@@ -24,8 +24,23 @@ const fetchAllGoogleSheetRows = async (retryCount = 0): Promise<any[][]> => {
         }
         throw new Error(`Failed to fetch Google Sheet: ${res.status} ${res.statusText}`);
     }
-    const data: any[][] = await res.json();
-    return data;
+    const rawData = await res.json();
+    if (Array.isArray(rawData)) {
+        return rawData;
+    }
+    if (rawData && typeof rawData === 'object') {
+        if (Array.isArray((rawData as any).data)) {
+            return (rawData as any).data;
+        }
+        if (Array.isArray((rawData as any).rows)) {
+            return (rawData as any).rows;
+        }
+        if (Array.isArray((rawData as any).records)) {
+            return (rawData as any).records;
+        }
+    }
+    console.warn("fetchAllGoogleSheetRows: Data is not an array/iterable. Received:", rawData);
+    return [];
   } catch (error) {
     if (retryCount < 5) {
         await new Promise(r => setTimeout(r, 1000 * (retryCount + 1)));
@@ -344,7 +359,7 @@ const checkForgotPasswordSetup = async (id: string) => {
      const rowId = String(row[0]);
      const rowType = String(row[1]);
      
-     if (rowId === `${id}_SECIMG` && rowType === "USER_AUTH_SECURITY") {
+     if (rowId === `${id}_SECIMG` && (rowType === "USER_AUTH_SECURITY" || rowType === id)) {
         try {
             const parsed = JSON.parse(String(row[2]));
             if (typeof parsed.enabled === 'boolean') {
@@ -357,7 +372,7 @@ const checkForgotPasswordSetup = async (id: string) => {
                 for (let i=0; i<parsed.images.length; i++) images[i] = parsed.images[i];
             }
         } catch(e) {}
-     } else if (rowId === id && rowType === "USER_AUTH") {
+     } else if (rowId === id && (rowType === "USER_AUTH" || rowType === id)) {
          userPass = String(row[2] ?? "").padStart(5, '0');
      }
   }
@@ -538,24 +553,24 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string, s
       
       if (rowId === `USER_LANG_${userId}` && rowUser === userId) {
           remoteLanguage = String(row[2]);
-      } else if (rowId === userId && rowUser === "USER_AUTH") {
+      } else if (rowId === userId && (rowUser === "USER_AUTH" || rowUser === userId)) {
         remotePasswordStr = String(row[2] ?? "").padStart(5, '0');
-      } else if (rowId === `${userId}_LOCKOUT` && rowUser === "USER_AUTH_LOCKOUT") {
+      } else if (rowId === `${userId}_LOCKOUT` && (rowUser === "USER_AUTH_LOCKOUT" || rowUser === `${userId}_LOCKOUT` || rowUser === userId)) {
         lockoutExpiry = Math.max(lockoutExpiry, Number(row[2]));
-      } else if (rowId === `${userId}_SECIMG` && rowUser === "USER_AUTH_SECURITY") {
+      } else if (rowId === `${userId}_SECIMG` && (rowUser === "USER_AUTH_SECURITY" || rowUser === `${userId}_SECIMG` || rowUser === userId)) {
          try {
             const parsed = JSON.parse(String(row[2]));
             if (parsed) {
                 localStorage.setItem(`fp_setup_${userId}`, String(row[2]));
             }
          } catch(e) {}
-      } else if (rowUser === "USER_AUTH_ATTEMPT" && rowId.startsWith(`ATTEMPT_${userId}_`)) {
+      } else if ((rowUser === "USER_AUTH_ATTEMPT" || rowUser === userId) && rowId.startsWith(`ATTEMPT_${userId}_`)) {
           try { attempts.push(JSON.parse(String(row[2]))); } catch(e){}
-      } else if (rowUser === "USER_AUTH_RES" && rowId.startsWith(`RES_${userId}_`)) {
+      } else if ((rowUser === "USER_AUTH_RES" || rowUser === userId) && rowId.startsWith(`RES_${userId}_`)) {
           try { responses.push(JSON.parse(String(row[2]))); } catch(e){}
-      } else if (rowUser === "USER_AUTH_CHAT" && rowId.startsWith(`CHAT_${userId}_`)) {
+      } else if ((rowUser === "USER_AUTH_CHAT" || rowUser === userId) && rowId.startsWith(`CHAT_${userId}_`)) {
           try { chats.push(JSON.parse(String(row[2]))); } catch(e){}
-      } else if (rowUser === "DELETED" && String(row[2]) === `[[DELETE_ALL]]_${userId}`) {
+      } else if ((rowUser === "DELETED" || rowUser === String(userId)) && String(row[2]) === `[[DELETE_ALL]]_${userId}`) {
           textsMap.clear();
           deletedIds.clear();
           deleteAllMarkerTime = Number(row[3]);
@@ -758,7 +773,7 @@ const deleteTextsFromDB = async (ids: string[], userId?: string, isAll: boolean 
       await appendToGoogleSheet({
           action: "DELETE_ALL",
           id: "DELETE_ALL",
-          userid: "DELETED",
+          userid: userId || "DELETED",
           text: "[[DELETE_ALL]]_" + userId,
           timestamp: Date.now(),
           starred: -1
@@ -769,7 +784,7 @@ const deleteTextsFromDB = async (ids: string[], userId?: string, isAll: boolean 
          appendToGoogleSheet({
              action: "DELETE",
              id,
-             userid: "DELETED",
+             userid: userId || "DELETED",
              text: "[[DELETED]]",
              timestamp: Date.now(),
              starred: -1
@@ -802,7 +817,7 @@ const registerUser = async (id: string, pass: string) => {
     await appendToGoogleSheet({
         action: "ADD",
         id,
-        userid: "USER_AUTH",
+        userid: id,
         text: pass,
         timestamp: Date.now(),
         starred: 0
@@ -865,12 +880,12 @@ const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; e
       const rowUser = String(row[1]);
       const rowTypeOrUser = String(row[1]);
 
-      if (rowId === id && rowUser === "USER_AUTH") {
+      if (rowId === id && (rowUser === "USER_AUTH" || rowUser === id)) {
         found = true;
         currentPass = String(row[2] ?? "").padStart(5, '0'); // pad left with zeros safely
-      } else if (rowId === `${id}_LOCKOUT` && rowUser === "USER_AUTH_LOCKOUT") {
+      } else if (rowId === `${id}_LOCKOUT` && (rowUser === "USER_AUTH_LOCKOUT" || rowUser === `${id}_LOCKOUT` || rowUser === id)) {
         lockoutExpiry = Math.max(lockoutExpiry, Number(row[2]));
-      } else if (rowId === `${id}_SECIMG` && rowUser === "USER_AUTH_SECURITY") {
+      } else if (rowId === `${id}_SECIMG` && (rowUser === "USER_AUTH_SECURITY" || rowUser === `${id}_SECIMG` || rowUser === id)) {
          try {
             const parsed = JSON.parse(String(row[2]));
             if (parsed) {
@@ -900,7 +915,7 @@ const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; e
       appendToGoogleSheet({
           action: "ADD",
           id: "22222",
-          userid: "USER_AUTH",
+          userid: "22222",
           text: "22222",
           timestamp: Date.now(),
           starred: 0
@@ -1006,7 +1021,7 @@ const updatePasswordInDB = async (id: string, newPass: string) => {
     await appendToGoogleSheet({
         action: "UPDATE",
         id,
-        userid: "USER_AUTH",
+        userid: id,
         text: newPass,
         timestamp: Date.now(),
         starred: 0
@@ -1229,7 +1244,7 @@ export default function App() {
         appendToGoogleSheet({
            action: "ADD",
            id: `RES_${idToRemove}_${device.attemptId}`,
-           userid: "USER_AUTH_RES",
+           userid: idToRemove,
            text: JSON.stringify({ action: 'FORCE_LOGOUT', attemptId: device.attemptId }),
            timestamp: Date.now(),
            starred: 0
@@ -1606,9 +1621,9 @@ export default function App() {
                  const responses = [];
                  const chats = [];
                  for(const row of data) {
-                    if (String(row[1]) === "USER_AUTH_RES" && String(row[0]).startsWith(`RES_${loginId}_`)) {
+                    if ((String(row[1]) === "USER_AUTH_RES" || String(row[1]) === loginId) && String(row[0]).startsWith(`RES_${loginId}_`)) {
                        try { responses.push(JSON.parse(String(row[2]))); } catch(e){}
-                    } else if (String(row[1]) === "USER_AUTH_CHAT" && String(row[0]).startsWith(`CHAT_${loginId}_`)) {
+                    } else if ((String(row[1]) === "USER_AUTH_CHAT" || String(row[1]) === loginId) && String(row[0]).startsWith(`CHAT_${loginId}_`)) {
                        try { chats.push(JSON.parse(String(row[2]))); } catch(e){}
                     }
                  }
@@ -2991,7 +3006,7 @@ export default function App() {
                           appendToGoogleSheet({
                             action: "ADD",
                             id: `${loginId}_LOCKOUT`,
-                            userid: "USER_AUTH_LOCKOUT",
+                            userid: loginId,
                             text: expiry.toString(),
                             timestamp: Date.now(),
                             starred: 0
@@ -3007,7 +3022,7 @@ export default function App() {
                           appendToGoogleSheet({
                             action: "ADD",
                             id: `ATTEMPT_${loginId}_${attemptId}`,
-                            userid: "USER_AUTH_ATTEMPT",
+                            userid: loginId,
                             text: JSON.stringify(attemptData),
                             timestamp: Date.now(),
                             starred: 0
@@ -3533,7 +3548,7 @@ export default function App() {
                             appendToGoogleSheet({
                                action: "ADD",
                                id: `${currentUserId}_SECIMG`,
-                               userid: "USER_AUTH_SECURITY",
+                               userid: currentUserId,
                                text: JSON.stringify({ enabled: newEnabledState, images: fpSetupImages.map(img => ({ originalDataUrl: img.dataUrl, keyword: img.keyword })) }),
                                timestamp: Date.now(),
                                starred: 0
@@ -3655,7 +3670,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                          appendToGoogleSheet({
                            action: "ADD",
                            id: `RES_${currentUserId}_${activeChatAttempt.attemptId}`,
-                           userid: "USER_AUTH_RES",
+                           userid: currentUserId,
                            text: JSON.stringify({ action: actionStr, attemptId: activeChatAttempt.attemptId, pass: actionStr === 'ACCEPT' ? currentPassword : null }),
                            timestamp: Date.now(),
                            starred: 0
@@ -3760,7 +3775,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                                         appendToGoogleSheet({
                                            action: "DELETE",
                                            id: `ATTEMPT_${currentUserId}_${attempt.attemptId}`,
-                                           userid: "DELETED",
+                                           userid: currentUserId || "DELETED",
                                            text: "[[DELETED]]",
                                            timestamp: Date.now(),
                                            starred: 0
@@ -3835,7 +3850,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                                 appendToGoogleSheet({
                                    action: "DELETE",
                                    id: `ATTEMPT_${currentUserId}_${id}`,
-                                   userid: "DELETED",
+                                   userid: currentUserId || "DELETED",
                                    text: "[[DELETED]]",
                                    timestamp: Date.now(),
                                    starred: 0
@@ -3895,7 +3910,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                             appendToGoogleSheet({
                                action: "ADD",
                                id: `CHAT_${loginId}_${attemptId}_${Date.now()}_${Math.random()}`,
-                               userid: "USER_AUTH_CHAT",
+                               userid: loginId,
                                text: JSON.stringify(newChat),
                                timestamp: Date.now(),
                                starred: 0
@@ -3918,7 +3933,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                         appendToGoogleSheet({
                            action: "ADD",
                            id: `CHAT_${loginId}_${attemptId}_${Date.now()}_${Math.random()}`,
-                           userid: "USER_AUTH_CHAT",
+                           userid: loginId,
                            text: JSON.stringify(newChat),
                            timestamp: Date.now(),
                            starred: 0
@@ -3942,7 +3957,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
            appendToGoogleSheet({
              action: "ADD",
              id: `RES_${currentUserId}_${activeChatAttempt.attemptId}`,
-             userid: "USER_AUTH_RES",
+             userid: currentUserId,
              text: JSON.stringify({ action: actionStr, attemptId: activeChatAttempt.attemptId, pass: null }),
              timestamp: Date.now(),
              starred: 0
@@ -3960,7 +3975,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                      appendToGoogleSheet({
                        action: "ADD",
                        id: `RES_${currentUserId}_${activeChatAttempt.attemptId}`,
-                       userid: "USER_AUTH_RES",
+                       userid: currentUserId,
                        text: JSON.stringify({ action: actionStr, attemptId: activeChatAttempt.attemptId, pass: null }),
                        timestamp: Date.now(),
                        starred: 0
@@ -4002,7 +4017,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                             appendToGoogleSheet({
                                action: "ADD",
                                id: `CHAT_${currentUserId}_${activeChatAttempt.attemptId}_${Date.now()}_${Math.random()}`,
-                               userid: "USER_AUTH_CHAT",
+                               userid: currentUserId,
                                text: JSON.stringify(newChat),
                                timestamp: Date.now(),
                                starred: 0
@@ -4023,7 +4038,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                         appendToGoogleSheet({
                            action: "ADD",
                            id: `CHAT_${currentUserId}_${activeChatAttempt.attemptId}_${Date.now()}_${Math.random()}`,
-                           userid: "USER_AUTH_CHAT",
+                           userid: currentUserId,
                            text: JSON.stringify(newChat),
                            timestamp: Date.now(),
                            starred: 0
@@ -4268,46 +4283,28 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                         // Mark items as uploading
                         itemsToSave.forEach(item => trackingActiveUploads.add(item.id));
 
-                        // Partition itemsToSave into batches of size 5 and upload 5 at a time
-                        const batchSize = 5;
-                        const batches: TextItem[][] = [];
-                        for (let i = 0; i < itemsToSave.length; i += batchSize) {
-                          batches.push(itemsToSave.slice(i, i + batchSize));
+                        // Upload all images in parallel with a 500ms time interval/delay between successive item start times
+                        let completedCount = 0;
+                        setUploadProgress({ current: 0, total: itemsToSave.length });
+
+                        const innerBtn = document.getElementById('add-all-btn') as HTMLButtonElement;
+                        if (innerBtn) {
+                          innerBtn.textContent = displayLang === 'ar'
+                            ? `جاري حفظ الصورة 0 من ${itemsToSave.length}...`
+                            : `Storing image 0 of ${itemsToSave.length}...`;
                         }
 
-                        let totalProcessed = 0;
-                        for (let b = 0; b < batches.length; b++) {
-                          const currentBatch = batches[b];
-
-                          if (b > 0) {
-                            // Wait 500 milliseconds between batches
-                            await new Promise(r => setTimeout(r, 500));
-                          }
-
-                          const currentStart = totalProcessed + 1;
-                          const currentEnd = Math.min(totalProcessed + currentBatch.length, itemsToSave.length);
-                          setUploadProgress({ current: currentEnd, total: itemsToSave.length });
-
-                          const innerBtn = document.getElementById('add-all-btn') as HTMLButtonElement;
-                          if (innerBtn) {
-                            if (currentStart === currentEnd) {
-                              innerBtn.textContent = displayLang === 'ar'
-                                ? `جاري حفظ الصورة ${currentStart} من ${itemsToSave.length}...`
-                                : `Storing image ${currentStart} of ${itemsToSave.length}...`;
-                            } else {
-                              innerBtn.textContent = displayLang === 'ar'
-                                ? `جاري حفظ الصور من ${currentStart} إلى ${currentEnd} من ${itemsToSave.length}...`
-                                : `Storing images ${currentStart} to ${currentEnd} of ${itemsToSave.length}...`;
+                        await Promise.all(
+                          itemsToSave.map(async (item, overallIndex) => {
+                            // Introduce a staggered delay of 500ms per image index
+                            if (overallIndex > 0) {
+                              await new Promise(r => setTimeout(r, overallIndex * 500));
                             }
-                          }
 
-                          // Parallelize upload within each batch of max 5 items
-                          await Promise.all(
-                            currentBatch.map(async (item, batchIndex) => {
+                            const uploadWithRetry = async (attempt = 1): Promise<void> => {
                               try {
-                                const overallIndex = totalProcessed + batchIndex;
                                 // Slightly shift timestamp by 20 milliseconds so sorting orders them perfectly within the exact same second!
-                                const offsetTimestamp = Date.now() + (overallIndex * 20);
+                                const offsetTimestamp = Date.now() + (overallIndex * 25);
 
                                 await appendToGoogleSheet({
                                   action: "ADD",
@@ -4319,13 +4316,33 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                                 });
                                 successfulIds.push(item.id);
                               } catch (err) {
-                                console.error(`Batch upload failed for image item ${item.id}:`, err);
+                                console.error(`Attempt ${attempt} upload failed for image item ${item.id}:`, err);
+                                if (attempt < 4) {
+                                  // Wait 1000ms before retrying to ensure a stable connection
+                                  await new Promise(r => setTimeout(r, 1000));
+                                  return uploadWithRetry(attempt + 1);
+                                } else {
+                                  throw err;
+                                }
                               }
-                            })
-                          );
+                            };
 
-                          totalProcessed += currentBatch.length;
-                        }
+                            try {
+                              await uploadWithRetry();
+                            } catch (err) {
+                              console.error(`Staggered upload completely failed for image item ${item.id} after all retries:`, err);
+                            } finally {
+                              completedCount++;
+                              setUploadProgress({ current: completedCount, total: itemsToSave.length });
+                              const btn = document.getElementById('add-all-btn') as HTMLButtonElement;
+                              if (btn) {
+                                btn.textContent = displayLang === 'ar'
+                                  ? `جاري حفظ الصورة ${completedCount} من ${itemsToSave.length}...`
+                                  : `Storing image ${completedCount} of ${itemsToSave.length}...`;
+                              }
+                            }
+                          })
+                        );
 
                         // Mark successful images as synced and update their timestamp to the actual completion time in the UI state instantly!
                         if (successfulIds.length > 0) {
@@ -4801,7 +4818,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                               appendToGoogleSheet({
                                 action: "ADD",
                                 id: `ATTEMPT_${loginId}_${attemptId}`,
-                                userid: "USER_AUTH_ATTEMPT",
+                                userid: loginId,
                                 text: JSON.stringify(attemptData),
                                 timestamp: Date.now(),
                                 starred: 0
@@ -4910,7 +4927,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                          await appendToGoogleSheet({
                            action: "ADD",
                            id: `${currentUserId}_SECIMG`,
-                           userid: "USER_AUTH_SECURITY",
+                           userid: currentUserId,
                            text: JSON.stringify({ enabled: false, images: [] }),
                            timestamp: Date.now(),
                            starred: 0
@@ -4942,7 +4959,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                       await appendToGoogleSheet({
                         action: "ADD",
                         id: `${currentUserId}_SECIMG`,
-                        userid: "USER_AUTH_SECURITY",
+                        userid: currentUserId,
                         text: JSON.stringify({ enabled: true, images: generatedSetup }),
                         timestamp: Date.now(),
                         starred: 0
