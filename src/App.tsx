@@ -1884,6 +1884,29 @@ export default function App() {
     { name: 'Tumblr', domain: 'tumblr.com' },
   ];
 
+  const handleDownloadImage = (text: string, referenceId: string, e?: React.MouseEvent | React.TouchEvent) => {
+    if (e) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+    if (!text.startsWith('data:image/')) return;
+    try {
+      const link = document.createElement('a');
+      link.href = text;
+      let ext = 'png';
+      const match = text.match(/data:image\/([a-zA-Z0-9+-]+);base64/);
+      if (match && match[1]) {
+        ext = match[1];
+      }
+      link.download = `image_${referenceId || Date.now()}.${ext}`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err) {
+      console.error("Failed to download image", err);
+    }
+  };
+
   const handleCopy = async (text: string, referenceId: string, e?: React.MouseEvent | React.TouchEvent) => {
     if (e) {
       e.stopPropagation();
@@ -2985,6 +3008,15 @@ export default function App() {
                         >
                           {copiedId === item.id ? <Check size={18} strokeWidth={1.5} className="text-green-500" /> : <Copy size={18} strokeWidth={1.5} />}
                         </button>
+                        {item.text.startsWith('data:image/') && (
+                          <button
+                            onClick={(e) => handleDownloadImage(item.text, item.id, e)}
+                            className="p-1.5 hover-actions-only transition-opacity bg-transparent text-gray-400 hover:text-white"
+                            title={t('download', displayLang)}
+                          >
+                            <Download size={18} strokeWidth={1.5} />
+                          </button>
+                        )}
                       </div>
                     )}
                     {item.text.startsWith('data:image/') ? (
@@ -4785,6 +4817,18 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
              </div>
              
              <div className="mt-4 flex items-center justify-center gap-6 bg-black/80 backdrop-blur-md px-6 py-3 rounded-full border border-white/10 shadow-lg shrink-0">
+                 {viewedItem.text.startsWith('data:image/') && (
+                   <>
+                     <button 
+                         onClick={(e) => handleDownloadImage(viewedItem.text, viewedItem.id, e)} 
+                         className="text-gray-300 hover:text-white transition-colors flex items-center gap-2 cursor-pointer bg-transparent border-none outline-none"
+                     >
+                         <Download size={20} />
+                         <span className="text-sm font-medium">{t('download', displayLang)}</span>
+                     </button>
+                     <div className="w-[1px] h-5 bg-white/20"></div>
+                   </>
+                 )}
                  <button 
                      onClick={(e) => handleCopy(viewedItem.text, viewedItem.id, e)} 
                      className="text-gray-300 hover:text-white transition-colors flex items-center gap-2 cursor-pointer bg-transparent border-none outline-none"
