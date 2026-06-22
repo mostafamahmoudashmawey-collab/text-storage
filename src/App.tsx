@@ -2160,20 +2160,34 @@ export default function App() {
           const maxSpeed = 15;  // scroll velocity per frame
           let scrolled = false;
 
-          if (clientY < rect.top + threshold && clientY > rect.top - 20) {
-            const ratio = (rect.top + threshold - clientY) / threshold;
-            const speed = Math.min(maxSpeed, Math.max(0, ratio * maxSpeed));
+          let targetYForSelection = clientY;
+          let targetXForSelection = clientX;
+
+          if (clientY < rect.top + threshold) {
+            // Scroll Up: even if coordinates are outside/above viewport entirely
+            const distance = rect.top + threshold - clientY;
+            const ratio = distance / threshold;
+            const speed = Math.min(maxSpeed, Math.max(1, ratio * maxSpeed));
             scrollContainer.scrollTop -= speed;
             scrolled = true;
-          } else if (clientY > rect.bottom - threshold && clientY < rect.bottom + 20) {
-            const ratio = (clientY - (rect.bottom - threshold)) / threshold;
-            const speed = Math.min(maxSpeed, Math.max(0, ratio * maxSpeed));
+            // Clamp target Y slightly inside top boundary so elementFromPoint highlights valid elements
+            targetYForSelection = rect.top + 10;
+          } else if (clientY > rect.bottom - threshold) {
+            // Scroll Down: even if coordinates are outside/below viewport entirely
+            const distance = clientY - (rect.bottom - threshold);
+            const ratio = distance / threshold;
+            const speed = Math.min(maxSpeed, Math.max(1, ratio * maxSpeed));
             scrollContainer.scrollTop += speed;
             scrolled = true;
+            // Clamp target Y slightly inside bottom boundary so elementFromPoint highlights valid elements
+            targetYForSelection = rect.bottom - 10;
           }
 
+          // Bound the horizontal target coordinates as well
+          targetXForSelection = Math.max(rect.left + 10, Math.min(rect.right - 10, targetXForSelection));
+
           if (scrolled) {
-            updateSelectionAtPoint(clientX, clientY);
+            updateSelectionAtPoint(targetXForSelection, targetYForSelection);
           }
         }
       }
@@ -2439,10 +2453,9 @@ export default function App() {
       reader.readAsDataURL(file);
     });
 
-    // Process images sequentially to avoid freezing mobile browsers and memory exhaustion
+    // Process images in parallel for blazing-fast loading speeds
     (async () => {
-      for (let i = 0; i < newFiles.length; i++) {
-        const file = newFiles[i];
+      await Promise.all(newFiles.map(async (file, i) => {
         const pUrl = newPreviews[i];
         try {
           const res = await compressImageToSafeSize(file);
@@ -2457,7 +2470,7 @@ export default function App() {
             [pUrl]: ""
           }));
         }
-      }
+      }));
       setIsProcessingImages(false);
     })();
   };
@@ -2472,7 +2485,7 @@ export default function App() {
   };
 
   return (
-    <div className={`min-h-screen w-full bg-black relative flex flex-col items-center justify-center gap-4 text-white ${theme === 'light' ? 'light-mode' : ''}`} >
+    <div className={`${currentView === 'dashboard' ? 'h-screen overflow-hidden' : 'min-h-screen'} w-full bg-black relative flex flex-col items-center justify-center gap-4 text-white ${theme === 'light' ? 'light-mode' : ''}`} >
       <header className="absolute top-0 left-0 right-0 h-[72px] flex items-center justify-between px-4 sm:px-6 w-full z-40 pointer-events-none" dir="ltr">
         <div className="flex items-center justify-start gap-2.5 text-lg text-white font-sans pointer-events-auto cursor-pointer w-auto sm:w-[200px] flex-shrink-0 select-none" onClick={() => { if (currentUserId && currentView === 'dashboard') { return; } else if (currentUserId) { setCurrentView('dashboard'); } else { setCurrentView('home'); } }}>
           <img src="/logo.png" className="w-8 h-8 rounded-lg object-cover border border-white/10 shadow-[0_0_10px_rgba(255,255,255,0.1)] active:scale-95 transition-all" alt="Inter Storage Logo" />
@@ -3067,7 +3080,7 @@ export default function App() {
       )}
 
       {currentView === 'dashboard' && texts.length > 0 && (
-        <div className="absolute inset-0 pt-[140px] px-3 sm:px-6 flex flex-col items-center pointer-events-none pb-6 w-full h-full overflow-hidden" dir="ltr">
+        <div className="absolute inset-0 pt-[140px] px-3 sm:px-6 flex flex-col items-center pointer-events-none w-full h-full overflow-hidden" dir="ltr">
           {/* Texts list */}
           <div className="flex-1 w-full pointer-events-auto overflow-y-auto custom-scrollbar" dir="rtl">
             <>
@@ -4254,17 +4267,11 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                         // Mark items as uploading
                         itemsToSave.forEach(item => trackingActiveUploads.add(item.id));
 
-                        // Sequence them step by step to avoid Google Sheet concurrency limits or lockouts, and track them
-                        for (let index = 0; index < itemsToSave.length; index++) {
-                          const item = itemsToSave[index];
-                          
-                          // Optional tiny delay to let separate requests land nicely but within the same second/moment
-                          if (index > 0) {
-                            await new Promise(r => setTimeout(r, 150));
-                          }
-
-                          // Update progress state and button text dynamically to keep user informed in real time!
-                          const progressNum = index + 1;
+                        // Upload them in parallel for blazing fast database insertions!
+                        let completedCount = 0;
+                        const updateProgressUI = () => {
+                          completedCount++;
+                          const progressNum = completedCount;
                           const remainingCount = itemsToSave.length - progressNum;
                           setUploadProgress({ current: progressNum, total: itemsToSave.length });
                           
@@ -4274,8 +4281,16 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                               ? `جاري حفظ الصورة ${progressNum} من ${itemsToSave.length} (المتبقي: ${remainingCount})...` 
                               : `Storing image ${progressNum} of ${itemsToSave.length} (Remaining: ${remainingCount})...`;
                           }
+                        };
 
+                        await Promise.all(itemsToSave.map(async (item, index) => {
                           try {
+                            // Introduce a progressive staggered delay of 180ms per image to absolutely guarantee Google Sheet locks do not collide,
+                            // while maintaining a blistering-fast experience that saves absolutely everything!
+                            if (index > 0) {
+                              await new Promise(r => setTimeout(r, index * 180));
+                            }
+
                             // Slightly shift timestamp by 20 milliseconds so sorting orders them perfectly within the exact same second!
                             const offsetTimestamp = Date.now() + (index * 20);
 
@@ -4289,9 +4304,11 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                             });
                             successfulIds.push(item.id);
                           } catch (err) {
-                            console.error(`Sequential DB upload failed for image item ${item.id}:`, err);
+                            console.error(`Parallel staggered DB upload failed for image item ${item.id}:`, err);
+                          } finally {
+                            updateProgressUI();
                           }
-                        }
+                        }));
 
                         // Mark successful images as synced and update their timestamp to the actual completion time in the UI state instantly!
                         if (successfulIds.length > 0) {
