@@ -2000,6 +2000,7 @@ export default function App() {
   const dragSelectionModeRef = useRef<'select' | 'deselect' | null>(null);
   const dragSequenceRef = useRef<string[]>([]);
   const initialSelectedTextsRef = useRef<Set<string>>(new Set());
+  const lastPointerCoordsRef = useRef<{ clientX: number; clientY: number }>({ clientX: 0, clientY: 0 });
 
   const toggleSelection = (id: string, e?: React.MouseEvent | React.TouchEvent) => {
     if (e) {
@@ -2080,10 +2081,8 @@ export default function App() {
   };
 
   useEffect(() => {
-    const handleGlobalPointerMove = (e: PointerEvent) => {
-      if (!isDraggingSelectionRef.current) return;
-
-      const element = document.elementFromPoint(e.clientX, e.clientY);
+    const updateSelectionAtPoint = (clientX: number, clientY: number) => {
+      const element = document.elementFromPoint(clientX, clientY);
       if (!element) return;
 
       const cardElement = element.closest('[data-card-id]');
@@ -2134,6 +2133,12 @@ export default function App() {
       }
     };
 
+    const handleGlobalPointerMove = (e: PointerEvent) => {
+      if (!isDraggingSelectionRef.current) return;
+      lastPointerCoordsRef.current = { clientX: e.clientX, clientY: e.clientY };
+      updateSelectionAtPoint(e.clientX, e.clientY);
+    };
+
     const handleGlobalPointerUp = () => {
       isDraggingSelectionRef.current = false;
       dragSelectedIdsRef.current.clear();
@@ -2142,11 +2147,47 @@ export default function App() {
       dragSelectionModeRef.current = null;
     };
 
+    // Auto-scroll loop
+    let animationFrameId: number;
+    const checkScrollAndSelection = () => {
+      if (isDraggingSelectionRef.current) {
+        const scrollContainer = document.querySelector('.overflow-y-auto.custom-scrollbar');
+        if (scrollContainer) {
+          const rect = scrollContainer.getBoundingClientRect();
+          const { clientX, clientY } = lastPointerCoordsRef.current;
+          
+          const threshold = 60; // distance from top or bottom of scroll boundary
+          const maxSpeed = 15;  // scroll velocity per frame
+          let scrolled = false;
+
+          if (clientY < rect.top + threshold && clientY > rect.top - 20) {
+            const ratio = (rect.top + threshold - clientY) / threshold;
+            const speed = Math.min(maxSpeed, Math.max(0, ratio * maxSpeed));
+            scrollContainer.scrollTop -= speed;
+            scrolled = true;
+          } else if (clientY > rect.bottom - threshold && clientY < rect.bottom + 20) {
+            const ratio = (clientY - (rect.bottom - threshold)) / threshold;
+            const speed = Math.min(maxSpeed, Math.max(0, ratio * maxSpeed));
+            scrollContainer.scrollTop += speed;
+            scrolled = true;
+          }
+
+          if (scrolled) {
+            updateSelectionAtPoint(clientX, clientY);
+          }
+        }
+      }
+      animationFrameId = requestAnimationFrame(checkScrollAndSelection);
+    };
+
+    animationFrameId = requestAnimationFrame(checkScrollAndSelection);
+
     window.addEventListener('pointermove', handleGlobalPointerMove, { passive: true });
     window.addEventListener('pointerup', handleGlobalPointerUp, { passive: true });
     window.addEventListener('pointercancel', handleGlobalPointerUp, { passive: true });
 
     return () => {
+      cancelAnimationFrame(animationFrameId);
       window.removeEventListener('pointermove', handleGlobalPointerMove);
       window.removeEventListener('pointerup', handleGlobalPointerUp);
       window.removeEventListener('pointercancel', handleGlobalPointerUp);
