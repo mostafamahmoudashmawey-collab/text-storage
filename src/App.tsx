@@ -1995,6 +1995,11 @@ export default function App() {
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const pressTimerRef = useRef<NodeJS.Timeout | null>(null);
   const wasLongPressedRef = useRef(false);
+  const isDraggingSelectionRef = useRef(false);
+  const dragSelectedIdsRef = useRef<Set<string>>(new Set());
+  const dragSelectionModeRef = useRef<'select' | 'deselect' | null>(null);
+  const dragSequenceRef = useRef<string[]>([]);
+  const initialSelectedTextsRef = useRef<Set<string>>(new Set());
 
   const toggleSelection = (id: string, e?: React.MouseEvent | React.TouchEvent) => {
     if (e) {
@@ -2012,15 +2017,44 @@ export default function App() {
   const handlePointerDown = (id: string) => {
     if (pressTimerRef.current) clearTimeout(pressTimerRef.current);
     wasLongPressedRef.current = false;
+
+    isDraggingSelectionRef.current = false;
+    dragSelectedIdsRef.current.clear();
+    dragSequenceRef.current = [];
+    initialSelectedTextsRef.current = new Set();
+    dragSelectionModeRef.current = null;
+
+    const isSelectingActive = selectedTexts.size > 0;
+    const currentlySelected = selectedTexts.has(id);
+
     pressTimerRef.current = setTimeout(() => {
       wasLongPressedRef.current = true;
+      const isStillSelected = selectedTexts.has(id);
+      dragSelectionModeRef.current = isStillSelected ? 'deselect' : 'select';
+      initialSelectedTextsRef.current = new Set(selectedTexts);
+
       setSelectedTexts(prev => {
         const newSet = new Set(prev);
-        newSet.add(id);
+        if (isStillSelected) {
+          newSet.delete(id);
+        } else {
+          newSet.add(id);
+        }
         return newSet;
       });
+      isDraggingSelectionRef.current = true;
+      dragSelectedIdsRef.current = new Set([id]);
+      dragSequenceRef.current = [id];
       if (navigator.vibrate) navigator.vibrate(50);
     }, 500);
+
+    if (isSelectingActive) {
+      isDraggingSelectionRef.current = true;
+      dragSelectedIdsRef.current = new Set([id]);
+      dragSequenceRef.current = [id];
+      initialSelectedTextsRef.current = new Set(selectedTexts);
+      dragSelectionModeRef.current = currentlySelected ? 'deselect' : 'select';
+    }
   };
 
   const handlePointerUpOrCancel = () => {
@@ -2028,10 +2062,96 @@ export default function App() {
       clearTimeout(pressTimerRef.current);
       pressTimerRef.current = null;
     }
+    isDraggingSelectionRef.current = false;
+    dragSelectedIdsRef.current.clear();
+    dragSequenceRef.current = [];
+    initialSelectedTextsRef.current.clear();
+    dragSelectionModeRef.current = null;
     setTimeout(() => {
       wasLongPressedRef.current = false;
     }, 100);
   };
+
+  const handlePointerLeaveCard = () => {
+    if (pressTimerRef.current) {
+      clearTimeout(pressTimerRef.current);
+      pressTimerRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    const handleGlobalPointerMove = (e: PointerEvent) => {
+      if (!isDraggingSelectionRef.current) return;
+
+      const element = document.elementFromPoint(e.clientX, e.clientY);
+      if (!element) return;
+
+      const cardElement = element.closest('[data-card-id]');
+      if (cardElement) {
+        const cardId = cardElement.getAttribute('data-card-id');
+        if (cardId) {
+          const seq = dragSequenceRef.current;
+          const lastCardId = seq[seq.length - 1];
+
+          if (cardId === lastCardId) {
+            return;
+          }
+
+          const indexInSeq = seq.indexOf(cardId);
+          if (indexInSeq !== -1) {
+            // Revert all selections for items that were after the revisited card in the drag sequence
+            const itemsToRemove = seq.slice(indexInSeq + 1);
+            setSelectedTexts(prev => {
+              const newSet = new Set(prev);
+              for (const idToRemove of itemsToRemove) {
+                if (initialSelectedTextsRef.current.has(idToRemove)) {
+                  newSet.add(idToRemove);
+                } else {
+                  newSet.delete(idToRemove);
+                }
+              }
+              return newSet;
+            });
+            dragSequenceRef.current = seq.slice(0, indexInSeq + 1);
+            dragSelectedIdsRef.current = new Set(dragSequenceRef.current);
+            if (navigator.vibrate) navigator.vibrate(20);
+          } else {
+            dragSequenceRef.current.push(cardId);
+            dragSelectedIdsRef.current.add(cardId);
+            setSelectedTexts(prev => {
+              const newSet = new Set(prev);
+              const mode = dragSelectionModeRef.current || 'select';
+              if (mode === 'deselect') {
+                newSet.delete(cardId);
+              } else {
+                newSet.add(cardId);
+              }
+              return newSet;
+            });
+            if (navigator.vibrate) navigator.vibrate(30);
+          }
+        }
+      }
+    };
+
+    const handleGlobalPointerUp = () => {
+      isDraggingSelectionRef.current = false;
+      dragSelectedIdsRef.current.clear();
+      dragSequenceRef.current = [];
+      initialSelectedTextsRef.current.clear();
+      dragSelectionModeRef.current = null;
+    };
+
+    window.addEventListener('pointermove', handleGlobalPointerMove, { passive: true });
+    window.addEventListener('pointerup', handleGlobalPointerUp, { passive: true });
+    window.addEventListener('pointercancel', handleGlobalPointerUp, { passive: true });
+
+    return () => {
+      window.removeEventListener('pointermove', handleGlobalPointerMove);
+      window.removeEventListener('pointerup', handleGlobalPointerUp);
+      window.removeEventListener('pointercancel', handleGlobalPointerUp);
+    };
+  }, []);
 
   const deleteSelectedTexts = async () => {
     const idsToDelete = Array.from(selectedTexts) as string[];
@@ -2930,10 +3050,12 @@ export default function App() {
                 return (
                   <div 
                     key={item.id} 
+                    data-card-id={item.id}
                     onPointerDown={() => handlePointerDown(item.id)}
                     onPointerUp={handlePointerUpOrCancel}
-                    onPointerLeave={handlePointerUpOrCancel}
+                    onPointerLeave={handlePointerLeaveCard}
                     onPointerCancel={handlePointerUpOrCancel}
+                    style={selectedTexts.size > 0 ? { touchAction: "none" } : undefined}
                     onContextMenu={(e) => {
                       if (selectedTexts.size > 0 || (pressTimerRef.current === null && selectedTexts.size === 0 && e.nativeEvent.pointerType === 'touch')) {
                         // We loosely prevent default if touched to select, or if currently selecting
@@ -3021,7 +3143,13 @@ export default function App() {
                     )}
                     {item.text.startsWith('data:image/') ? (
                       <div className="w-full flex items-center justify-center">
-                        <img src={item.text} alt="Image content" className="w-full h-auto object-contain rounded-lg bg-black/20" />
+                        <img 
+                          src={item.text} 
+                          alt="Image content" 
+                          className="w-full h-auto object-contain rounded-lg bg-black/20 pointer-events-none select-none" 
+                          draggable="false"
+                          onDragStart={(e) => e.preventDefault()}
+                        />
                       </div>
                     ) : (
                       <>{displayText}</>
