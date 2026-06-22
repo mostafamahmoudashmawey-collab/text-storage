@@ -2391,8 +2391,8 @@ export default function App() {
   };
 
   const handleImageFiles = async (files: File[]) => {
-    // Process attached images safely under account limits: Max 10 for all accounts
-    const maxLimit = 10;
+    // Process attached images safely under account limits: Max 15 for all accounts
+    const maxLimit = 15;
     const allowedCount = Math.max(0, maxLimit - imagePreviews.length);
     if (allowedCount === 0 || files.length === 0) return;
 
@@ -4154,7 +4154,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                   );
                 })}
                 
-                {imagePreviews.length > 0 && imagePreviews.length < 10 && !isProcessingImages && (
+                {imagePreviews.length > 0 && imagePreviews.length < 15 && !isProcessingImages && (
                   <div 
                     className="aspect-square w-full relative bg-white/5 hover:bg-white/10 border border-dashed border-white/20 hover:border-white/40 rounded-xl transition-all cursor-pointer group"
                     onClick={() => {
