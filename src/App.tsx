@@ -8,7 +8,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { sendP2P } from './p2p';
 import { t, Language } from './i18n';
 
-const GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbxUoURvQwhjAKUDY76Xzfh05gRka1f7tgfqqxQbzjlTrkF8EUHXK7RVocpF1jmZuYGrNg/exec";
+const GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbyiEns9GDoPmwDTKM7WdmMghaKrB_K_QQ2CBuW__0CyZC2GS-axQOSC0H4WrUoW2A2xPQ/exec";
 
 // Fetch all rows from the Google Sheet
 const fetchAllGoogleSheetRows = async (retryCount = 0): Promise<any[][]> => {
