@@ -4268,46 +4268,64 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                         // Mark items as uploading
                         itemsToSave.forEach(item => trackingActiveUploads.add(item.id));
 
-                        // Track completed count for updating progress in real-time
-                        let completedParallelCount = 0;
+                        // Partition itemsToSave into batches of size 5 and upload 5 at a time
+                        const batchSize = 5;
+                        const batches: TextItem[][] = [];
+                        for (let i = 0; i < itemsToSave.length; i += batchSize) {
+                          batches.push(itemsToSave.slice(i, i + batchSize));
+                        }
 
-                        // Start all image uploads concurrently but with a 250ms staggered launch delay
-                        const uploadPromises = itemsToSave.map(async (item, index) => {
-                          // Wait for staggered delay of 250ms per index
-                          await new Promise(resolve => setTimeout(resolve, index * 250));
+                        let totalProcessed = 0;
+                        for (let b = 0; b < batches.length; b++) {
+                          const currentBatch = batches[b];
 
-                          try {
-                            // Slightly shift timestamp by 20 milliseconds so sorting orders them perfectly within the exact same second!
-                            const offsetTimestamp = Date.now() + (index * 20);
+                          if (b > 0) {
+                            // Wait 500 milliseconds between batches
+                            await new Promise(r => setTimeout(r, 500));
+                          }
 
-                            await appendToGoogleSheet({
-                              action: "ADD",
-                              id: item.id,
-                              userid: item.userId,
-                              text: item.text,
-                              timestamp: offsetTimestamp,
-                              starred: item.starred ? 1 : 0
-                            });
-                            successfulIds.push(item.id);
-                          } catch (err) {
-                            console.error(`Parallel DB upload failed for image item ${item.id}:`, err);
-                          } finally {
-                            completedParallelCount++;
-                            const progressNum = completedParallelCount;
-                            const remainingCount = itemsToSave.length - progressNum;
-                            setUploadProgress({ current: progressNum, total: itemsToSave.length });
-                            
-                            const innerBtn = document.getElementById('add-all-btn') as HTMLButtonElement;
-                            if (innerBtn) {
-                              innerBtn.textContent = displayLang === 'ar' 
-                                ? `جاري حفظ الصورة ${progressNum} من ${itemsToSave.length} (المتبقي: ${remainingCount})...` 
-                                : `Storing image ${progressNum} of ${itemsToSave.length} (Remaining: ${remainingCount})...`;
+                          const currentStart = totalProcessed + 1;
+                          const currentEnd = Math.min(totalProcessed + currentBatch.length, itemsToSave.length);
+                          setUploadProgress({ current: currentEnd, total: itemsToSave.length });
+
+                          const innerBtn = document.getElementById('add-all-btn') as HTMLButtonElement;
+                          if (innerBtn) {
+                            if (currentStart === currentEnd) {
+                              innerBtn.textContent = displayLang === 'ar'
+                                ? `جاري حفظ الصورة ${currentStart} من ${itemsToSave.length}...`
+                                : `Storing image ${currentStart} of ${itemsToSave.length}...`;
+                            } else {
+                              innerBtn.textContent = displayLang === 'ar'
+                                ? `جاري حفظ الصور من ${currentStart} إلى ${currentEnd} من ${itemsToSave.length}...`
+                                : `Storing images ${currentStart} to ${currentEnd} of ${itemsToSave.length}...`;
                             }
                           }
-                        });
 
-                        // Await for all staggered parallel uploads to complete
-                        await Promise.all(uploadPromises);
+                          // Parallelize upload within each batch of max 5 items
+                          await Promise.all(
+                            currentBatch.map(async (item, batchIndex) => {
+                              try {
+                                const overallIndex = totalProcessed + batchIndex;
+                                // Slightly shift timestamp by 20 milliseconds so sorting orders them perfectly within the exact same second!
+                                const offsetTimestamp = Date.now() + (overallIndex * 20);
+
+                                await appendToGoogleSheet({
+                                  action: "ADD",
+                                  id: item.id,
+                                  userid: item.userId,
+                                  text: item.text,
+                                  timestamp: offsetTimestamp,
+                                  starred: item.starred ? 1 : 0
+                                });
+                                successfulIds.push(item.id);
+                              } catch (err) {
+                                console.error(`Batch upload failed for image item ${item.id}:`, err);
+                              }
+                            })
+                          );
+
+                          totalProcessed += currentBatch.length;
+                        }
 
                         // Mark successful images as synced and update their timestamp to the actual completion time in the UI state instantly!
                         if (successfulIds.length > 0) {
