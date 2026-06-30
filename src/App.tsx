@@ -1020,7 +1020,6 @@ export default function App() {
   const [language, setLanguage] = useState<Language>('en');
   const [tempLanguage, setTempLanguage] = useState<Language | null>(null);
   const [showLanguagePopup, setShowLanguagePopup] = useState(false);
-  const [isSignupLanguage, setIsSignupLanguage] = useState(false);
   const [currentView, setCurrentView] = useState<'home' | 'signup' | 'login' | 'dashboard'>('home');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
@@ -2764,7 +2763,6 @@ export default function App() {
                 setCurrentPassword(password);
                 saveSession(generatedId, password);
                 setTempLanguage(null);
-                setIsSignupLanguage(true);
                 setShowLanguagePopup(true);
                 setCurrentView('dashboard');
               }}
@@ -3582,7 +3580,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
 
             <div className="flex flex-col gap-3 mt-4 w-full">
               <button 
-                onClick={() => { setShowUserIdPopup(false); setTempLanguage(language); setIsSignupLanguage(false); setShowLanguagePopup(true); }} 
+                onClick={() => { setShowUserIdPopup(false); setTempLanguage(language); setShowLanguagePopup(true); }} 
                 className="w-full cursor-pointer bg-white/10 text-white hover:bg-white/20 font-medium py-3 rounded-xl transition-all active:scale-95 text-base border-none outline-none"
               >
                 {t('websiteLanguage', displayLang)}
@@ -5189,7 +5187,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                <X size={24} />
              </button>
              <div className="w-16 h-1 bg-white/20 rounded-full mb-6 mx-auto"></div>
-             <div className="text-xl sm:text-2xl text-white font-medium mb-8 text-center pt-2 tracking-wide font-sans">{isSignupLanguage ? "Website language" : t('websiteLanguage', displayLang)}</div>
+             <div className="text-xl sm:text-2xl text-white font-medium mb-8 text-center pt-2 tracking-wide font-sans">{t('websiteLanguage', displayLang)}</div>
              
              <div className="flex flex-col w-full gap-4">
                  <button onClick={() => {

@@ -23,7 +23,7 @@ export const translations = {
     logoutConfirmTitle: "Are you sure you want to logout?",
     cancel: "Cancel",
     confirm: "Confirm",
-    websiteLanguage: "Website language",
+    websiteLanguage: "Website Language",
     english: "English",
     arabic: "Arabic",
     homeFirstButton: "Login",
