@@ -9,18 +9,20 @@ import { sendP2P } from './p2p';
 import { t, Language } from './i18n';
 
 const GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbxUoURvQwhjAKUDY76Xzfh05gRka1f7tgfqqxQbzjlTrkF8EUHXK7RVocpF1jmZuYGrNg/exec";
+const BACKUP_GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbyiEns9GDoPmwDTKM7WdmMghaKrB_K_QQ2CBuW__0CyZC2GS-axQOSC0H4WrUoW2A2xPQ/exec";
 
 // Fetch all rows from the Google Sheet
-const fetchAllGoogleSheetRows = async (retryCount = 0): Promise<any[][]> => {
+const fetchAllGoogleSheetRows = async (retryCount = 0, useBackup = false): Promise<any[][]> => {
+  const url = useBackup ? BACKUP_GOOGLE_SHEETS_URL : GOOGLE_SHEETS_URL;
   try {
     const urlParams = new URLSearchParams({ t: Date.now().toString() });
-    const res = await fetch(`${GOOGLE_SHEETS_URL}?${urlParams.toString()}`, { 
+    const res = await fetch(`${url}?${urlParams.toString()}`, { 
         method: "GET"
     });
     if (!res.ok) {
         if (res.status === 429 && retryCount < 5) {
             await new Promise(r => setTimeout(r, 1000 * (retryCount + 1)));
-            return fetchAllGoogleSheetRows(retryCount + 1);
+            return fetchAllGoogleSheetRows(retryCount + 1, useBackup);
         }
         throw new Error(`Failed to fetch Google Sheet: ${res.status} ${res.statusText}`);
     }
@@ -29,7 +31,12 @@ const fetchAllGoogleSheetRows = async (retryCount = 0): Promise<any[][]> => {
   } catch (error) {
     if (retryCount < 5) {
         await new Promise(r => setTimeout(r, 1000 * (retryCount + 1)));
-        return fetchAllGoogleSheetRows(retryCount + 1);
+        return fetchAllGoogleSheetRows(retryCount + 1, useBackup);
+    }
+    // If we failed with primary, try backup
+    if (!useBackup) {
+        console.warn("Primary Google Sheet fetch failed, falling back to backup...");
+        return fetchAllGoogleSheetRows(0, true);
     }
     throw error;
   }
@@ -42,13 +49,25 @@ const appendToGoogleSheet = async (payload: any, retryCount = 0): Promise<any> =
     // Browser restricts keepalive requests to small payloads (typically cumulative 64KB max)
     const canKeepAlive = bodyStr.length < 8192;
     
-    await fetch(GOOGLE_SHEETS_URL, {
+    // Write to primary URL
+    const p1 = fetch(GOOGLE_SHEETS_URL, {
       method: "POST",
       body: bodyStr,
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       mode: "no-cors",
       ...(canKeepAlive ? { keepalive: true } : {})
     });
+    
+    // Also write to backup URL as mirror
+    const p2 = fetch(BACKUP_GOOGLE_SHEETS_URL, {
+      method: "POST",
+      body: bodyStr,
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      mode: "no-cors",
+      ...(canKeepAlive ? { keepalive: true } : {})
+    });
+
+    await Promise.all([p1.catch(() => {}), p2.catch(() => {})]);
     return {};
   } catch (error) {
     if (retryCount < 2) {
@@ -335,35 +354,50 @@ const getDeterministicDummyUrl = (keyword: string, userId: string, i: number, j:
 };
 
 const checkForgotPasswordSetup = async (id: string) => {
-  const data = await fetchAllGoogleSheetRows();
+  let data = await fetchAllGoogleSheetRows(0, false);
   let userPass = null;
   const images: any[] = [];
   let isEnabledExplicitly = true;
   
-  for (const row of data) {
-     const rowId = String(row[0]);
-     const rowType = String(row[1]);
-     
-     if (rowId === `${id}_SECIMG` && rowType === "USER_AUTH_SECURITY") {
-        try {
-            const parsed = JSON.parse(String(row[2]));
-            if (typeof parsed.enabled === 'boolean') {
-                isEnabledExplicitly = parsed.enabled;
-            } else {
-                isEnabledExplicitly = true;
-            }
-            if (parsed.images) {
-                images.length = 0;
-                for (let i=0; i<parsed.images.length; i++) images[i] = parsed.images[i];
-            }
-        } catch(e) {}
-     } else if (rowId === id && rowType === "USER_AUTH") {
-         userPass = String(row[2] ?? "").padStart(5, '0');
+  const processData = (rows: any[][]) => {
+    for (const row of rows) {
+       const cleanRowId = String(row[0] ?? "").trim();
+       const cleanRowType = String(row[1] ?? "").trim();
+       
+       if (cleanRowId === `${id.trim()}_SECIMG` && cleanRowType === "USER_AUTH_SECURITY") {
+          try {
+              const parsed = JSON.parse(String(row[2]));
+              if (typeof parsed.enabled === 'boolean') {
+                  isEnabledExplicitly = parsed.enabled;
+              } else {
+                  isEnabledExplicitly = true;
+              }
+              if (parsed.images) {
+                  images.length = 0;
+                  for (let i=0; i<parsed.images.length; i++) images[i] = parsed.images[i];
+              }
+          } catch(e) {}
+       } else if ((cleanRowId === id.trim() || (parseInt(cleanRowId, 10) === parseInt(id, 10) && !isNaN(parseInt(cleanRowId, 10)))) && cleanRowType === "USER_AUTH") {
+           userPass = String(row[2] ?? "").padStart(5, '0');
+       }
+    }
+  };
+
+  processData(data);
+
+  const hasFiveImages = images.filter(img => img != null).length === 5;
+  if (!hasFiveImages || !userPass) {
+     console.warn("Forgot Password Setup check: Not found in primary sheet, trying backup...");
+     try {
+        const backupData = await fetchAllGoogleSheetRows(0, true);
+        processData(backupData);
+     } catch (err) {
+        console.error("Forgot Pwd setup backup fetch failed:", err);
      }
   }
   
-  const hasFiveImages = images.filter(img => img != null).length === 5;
-  if (hasFiveImages) {
+  const finalHasFiveImages = images.filter(img => img != null).length === 5;
+  if (finalHasFiveImages) {
      return { enabled: isEnabledExplicitly, images, userPass };
   }
   return null;
@@ -518,7 +552,31 @@ const getTextsFromLocalDB = async (userId: string): Promise<TextItem[]> => {
 
 const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string, skipTexts: boolean = false): Promise<{ passwordMismatch?: boolean, attempts?: any[], chats?: any[], language?: string } | void> => {
   try {
-    const data = await fetchAllGoogleSheetRows();
+    let data = await fetchAllGoogleSheetRows(0, false);
+    
+    // Check if user exists in the primary data
+    let foundUser = false;
+    for (const row of data) {
+      const cleanRowId = String(row[0] ?? "").trim();
+      const cleanRowUser = String(row[1] ?? "").trim();
+      if ((cleanRowId === userId.trim() || (parseInt(cleanRowId, 10) === parseInt(userId, 10) && !isNaN(parseInt(cleanRowId, 10)))) && cleanRowUser === "USER_AUTH") {
+        foundUser = true;
+        break;
+      }
+    }
+
+    if (!foundUser) {
+      console.warn("Sync: User ID not found in primary sheet, trying backup...");
+      try {
+        const backupData = await fetchAllGoogleSheetRows(0, true);
+        if (backupData && backupData.length > 0) {
+          data = backupData;
+        }
+      } catch (err) {
+        console.error("Sync backup fetch failed:", err);
+      }
+    }
+
     const textsMap = new Map<string, TextItem>();
     const deletedIds = new Set<string>();
     let deleteAllMarkerTime = 0;
@@ -533,37 +591,37 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string, s
 
     // Process items sequentially to always keep the latest version.
     for (const row of data) {
-      const rowId = String(row[0]);
-      const rowUser = String(row[1]);
+      const cleanRowId = String(row[0] ?? "").trim();
+      const cleanRowUser = String(row[1] ?? "").trim();
       
-      if (rowId === `USER_LANG_${userId}` && rowUser === userId) {
+      if (cleanRowId === `USER_LANG_${userId.trim()}` && cleanRowUser === userId.trim()) {
           remoteLanguage = String(row[2]);
-      } else if (rowId === userId && rowUser === "USER_AUTH") {
+      } else if ((cleanRowId === userId.trim() || (parseInt(cleanRowId, 10) === parseInt(userId, 10) && !isNaN(parseInt(cleanRowId, 10)))) && cleanRowUser === "USER_AUTH") {
         remotePasswordStr = String(row[2] ?? "").padStart(5, '0');
-      } else if (rowId === `${userId}_LOCKOUT` && rowUser === "USER_AUTH_LOCKOUT") {
+      } else if (cleanRowId === `${userId.trim()}_LOCKOUT` && cleanRowUser === "USER_AUTH_LOCKOUT") {
         lockoutExpiry = Math.max(lockoutExpiry, Number(row[2]));
-      } else if (rowId === `${userId}_SECIMG` && rowUser === "USER_AUTH_SECURITY") {
+      } else if (cleanRowId === `${userId.trim()}_SECIMG` && cleanRowUser === "USER_AUTH_SECURITY") {
          try {
             const parsed = JSON.parse(String(row[2]));
             if (parsed) {
                 localStorage.setItem(`fp_setup_${userId}`, String(row[2]));
             }
          } catch(e) {}
-      } else if (rowUser === "USER_AUTH_ATTEMPT" && rowId.startsWith(`ATTEMPT_${userId}_`)) {
+      } else if (cleanRowUser === "USER_AUTH_ATTEMPT" && cleanRowId.startsWith(`ATTEMPT_${userId.trim()}_`)) {
           try { attempts.push(JSON.parse(String(row[2]))); } catch(e){}
-      } else if (rowUser === "USER_AUTH_RES" && rowId.startsWith(`RES_${userId}_`)) {
+      } else if (cleanRowUser === "USER_AUTH_RES" && cleanRowId.startsWith(`RES_${userId.trim()}_`)) {
           try { responses.push(JSON.parse(String(row[2]))); } catch(e){}
-      } else if (rowUser === "USER_AUTH_CHAT" && rowId.startsWith(`CHAT_${userId}_`)) {
+      } else if (cleanRowUser === "USER_AUTH_CHAT" && cleanRowId.startsWith(`CHAT_${userId.trim()}_`)) {
           try { chats.push(JSON.parse(String(row[2]))); } catch(e){}
-      } else if (rowUser === "DELETED" && String(row[2]) === `[[DELETE_ALL]]_${userId}`) {
+      } else if (cleanRowUser === "DELETED" && String(row[2]) === `[[DELETE_ALL]]_${userId.trim()}`) {
           textsMap.clear();
           deletedIds.clear();
           deleteAllMarkerTime = Number(row[3]);
-      } else if (rowUser === String(userId) || rowUser === "DELETED") {
-        if (Number(row[4]) === -1 || String(row[2]) === "[[DELETED]]" || rowUser === "DELETED") {
-            textsMap.delete(rowId);
-            deletedIds.add(rowId);
-        } else if (rowUser === String(userId)) {
+      } else if (cleanRowUser === userId.trim() || cleanRowUser === "DELETED") {
+        if (Number(row[4]) === -1 || String(row[2] ?? "") === "[[DELETED]]" || cleanRowUser === "DELETED") {
+            textsMap.delete(cleanRowId);
+            deletedIds.add(cleanRowId);
+        } else if (cleanRowUser === userId.trim()) {
             const rowTextVal = String(row[2]);
             if (rowTextVal.startsWith("BATCH_IMAGES_V1:::")) {
               try {
@@ -573,7 +631,7 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string, s
                     if (!deletedIds.has(subItem.id)) {
                       textsMap.set(subItem.id, {
                         id: subItem.id,
-                        userId: rowUser,
+                        userId: cleanRowUser,
                         text: subItem.text,
                         timestamp: Number(subItem.timestamp || row[3]),
                         starred: subItem.starred === 1 || !!subItem.starred,
@@ -586,10 +644,10 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string, s
                 console.error("Failed to unpack image batch from remote database:", e);
               }
             } else {
-              if (!deletedIds.has(rowId)) {
-                textsMap.set(rowId, {
-                    id: rowId,
-                    userId: rowUser,
+              if (!deletedIds.has(cleanRowId)) {
+                textsMap.set(cleanRowId, {
+                    id: cleanRowId,
+                    userId: cleanRowUser,
                     text: rowTextVal,
                     timestamp: Number(row[3]),
                     starred: Number(row[4]) === 1,
@@ -597,7 +655,7 @@ const syncTextsFromRemoteDB = async (userId: string, currentPassword?: string, s
                 });
               }
             }
-            deletedIds.delete(rowId);
+            deletedIds.delete(cleanRowId);
         }
       }
     }
@@ -853,46 +911,61 @@ const loginUser = async (id: string, pass: string): Promise<{isValid: boolean; e
   }
 
   try {
-    const data = await fetchAllGoogleSheetRows();
+    let data = await fetchAllGoogleSheetRows(0, false);
     let currentPass = null;
     let found = false;
     let lockoutExpiry = 0;
     
     const textsMap = new Map<string, TextItem>();
 
-    for (const row of data) {
-      const rowId = String(row[0]);
-      const rowUser = String(row[1]);
-      const rowTypeOrUser = String(row[1]);
+    const processRows = (rows: any[][]) => {
+      for (const row of rows) {
+        const cleanRowId = String(row[0] ?? "").trim();
+        const cleanRowUser = String(row[1] ?? "").trim();
+        const cleanRowTypeOrUser = String(row[1] ?? "").trim();
 
-      if (rowId === id && rowUser === "USER_AUTH") {
-        found = true;
-        currentPass = String(row[2] ?? "").padStart(5, '0'); // pad left with zeros safely
-      } else if (rowId === `${id}_LOCKOUT` && rowUser === "USER_AUTH_LOCKOUT") {
-        lockoutExpiry = Math.max(lockoutExpiry, Number(row[2]));
-      } else if (rowId === `${id}_SECIMG` && rowUser === "USER_AUTH_SECURITY") {
-         try {
-            const parsed = JSON.parse(String(row[2]));
-            if (parsed) {
-                localStorage.setItem(`fp_setup_${id}`, String(row[2]));
-            }
-         } catch(e) {}
-      }
-
-      // Text extracting
-      if (rowTypeOrUser === id || rowTypeOrUser === "DELETED") {
-        if (Number(row[4]) === -1 || String(row[2]) === "[[DELETED]]" || rowTypeOrUser === "DELETED") {
-            textsMap.delete(rowId);
-        } else if (rowTypeOrUser === id) {
-            textsMap.set(rowId, {
-                id: rowId,
-                userId: rowUser,
-                text: String(row[2]),
-                timestamp: Number(row[3]),
-                starred: Number(row[4]) === 1,
-                synced: true
-            });
+        if ((cleanRowId === id.trim() || (parseInt(cleanRowId, 10) === parseInt(id, 10) && !isNaN(parseInt(cleanRowId, 10)))) && cleanRowUser === "USER_AUTH") {
+          found = true;
+          currentPass = String(row[2] ?? "").padStart(5, '0'); // pad left with zeros safely
+        } else if (cleanRowId === `${id.trim()}_LOCKOUT` && cleanRowUser === "USER_AUTH_LOCKOUT") {
+          lockoutExpiry = Math.max(lockoutExpiry, Number(row[2]));
+        } else if (cleanRowId === `${id.trim()}_SECIMG` && cleanRowUser === "USER_AUTH_SECURITY") {
+           try {
+              const parsed = JSON.parse(String(row[2]));
+              if (parsed) {
+                  localStorage.setItem(`fp_setup_${id}`, String(row[2]));
+              }
+           } catch(e) {}
         }
+
+        // Text extracting
+        if (cleanRowTypeOrUser === id.trim() || cleanRowTypeOrUser === "DELETED") {
+          if (Number(row[4]) === -1 || String(row[2] ?? "") === "[[DELETED]]" || cleanRowTypeOrUser === "DELETED") {
+              textsMap.delete(cleanRowId);
+          } else if (cleanRowTypeOrUser === id.trim()) {
+              textsMap.set(cleanRowId, {
+                  id: cleanRowId,
+                  userId: cleanRowUser,
+                  text: String(row[2]),
+                  timestamp: Number(row[3]),
+                  starred: Number(row[4]) === 1,
+                  synced: true
+              });
+          }
+        }
+      }
+    };
+
+    processRows(data);
+
+    // If not found in primary, try backup
+    if (!found) {
+      console.warn("User ID not found in primary Google Sheet, checking backup...");
+      try {
+        const backupData = await fetchAllGoogleSheetRows(0, true);
+        processRows(backupData);
+      } catch (backupErr) {
+        console.error("Backup Google Sheet fetch error:", backupErr);
       }
     }
 
