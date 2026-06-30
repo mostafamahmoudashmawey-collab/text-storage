@@ -3583,7 +3583,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                 onClick={() => { setShowUserIdPopup(false); setTempLanguage(language); setShowLanguagePopup(true); }} 
                 className="w-full cursor-pointer bg-white/10 text-white hover:bg-white/20 font-medium py-3 rounded-xl transition-all active:scale-95 text-base border-none outline-none"
               >
-                {localStorage.getItem('website_language') ? t('websiteLanguage', displayLang) : "Website language"}
+                {t('websiteLanguage', displayLang)}
               </button>
               <button 
                 id="logout-btn"
@@ -5187,7 +5187,7 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
                <X size={24} />
              </button>
              <div className="w-16 h-1 bg-white/20 rounded-full mb-6 mx-auto"></div>
-             <div className="text-xl sm:text-2xl text-white font-medium mb-8 text-center pt-2 tracking-wide font-sans">{localStorage.getItem('website_language') ? t('websiteLanguage', displayLang) : "Website language"}</div>
+             <div className="text-xl sm:text-2xl text-white font-medium mb-8 text-center pt-2 tracking-wide font-sans">{t('websiteLanguage', displayLang)}</div>
              
              <div className="flex flex-col w-full gap-4">
                  <button onClick={() => {
