@@ -5372,6 +5372,14 @@ export default function App() {
     <div className="flex flex-col items-center justify-center min-h-screen bg-black text-white text-center px-4">
       <h1 className="text-xl md:text-2xl font-bold mb-4" dir="rtl">الموقع مغلق حالياً.</h1>
       <h2 className="text-xl md:text-2xl font-bold" dir="ltr">The site is currently closed.</h2>
+      <a 
+        href="https://www.youtube.com/@luxe_vision777/shorts" 
+        target="_blank" 
+        rel="noopener noreferrer"
+        className="mt-6 text-gray-400 hover:text-white transition-colors underline"
+      >
+        https://www.youtube.com/@luxe_vision777/shorts
+      </a>
     </div>
   );
 }
