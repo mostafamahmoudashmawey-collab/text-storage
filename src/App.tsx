@@ -1089,7 +1089,7 @@ const updatePasswordInDB = async (id: string, newPass: string) => {
   }
 };
 
-function OriginalApp() {
+function App() {
   const [language, setLanguage] = useState<Language>('en');
   const [tempLanguage, setTempLanguage] = useState<Language | null>(null);
   const [showLanguagePopup, setShowLanguagePopup] = useState(false);
@@ -5367,11 +5367,5 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
   );
 }
 
-export default function App() {
-  return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-black text-white text-center px-4">
-      <h1 className="text-xl md:text-2xl font-bold mb-4" dir="rtl">الموقع مغلق حالياً.</h1>
-      <h2 className="text-xl md:text-2xl font-bold" dir="ltr">The site is currently closed.</h2>
-    </div>
-  );
-}
+export default App;
+
