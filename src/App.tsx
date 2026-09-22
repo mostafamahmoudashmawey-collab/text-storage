@@ -7,6 +7,7 @@ import { Eye, EyeOff, Plus, User, Trash2, Pencil, Copy, Check, X, Star, Share2, 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { sendP2P } from './p2p';
 import { t, Language } from './i18n';
+import { SideAds } from './components/SideAds';
 
 const GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbxUoURvQwhjAKUDY76Xzfh05gRka1f7tgfqqxQbzjlTrkF8EUHXK7RVocpF1jmZuYGrNg/exec";
 const BACKUP_GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbyiEns9GDoPmwDTKM7WdmMghaKrB_K_QQ2CBuW__0CyZC2GS-axQOSC0H4WrUoW2A2xPQ/exec";
@@ -2560,6 +2561,9 @@ function App() {
 
   return (
     <div className={`${currentView === 'dashboard' ? 'h-screen overflow-hidden' : 'min-h-screen'} w-full bg-black relative flex flex-col items-center justify-center gap-4 text-white ${theme === 'light' ? 'light-mode' : ''}`} >
+      {/* External Advertisements on Left & Right */}
+      <SideAds language={language} />
+
       <header className="absolute top-0 left-0 right-0 h-[72px] flex items-center justify-between px-4 sm:px-6 w-full z-40 pointer-events-none" dir="ltr">
         <div className="flex items-center justify-start gap-2.5 text-lg text-white font-sans pointer-events-auto cursor-pointer w-auto sm:w-[200px] flex-shrink-0 select-none" onClick={() => { if (currentUserId && currentView === 'dashboard') { return; } else if (currentUserId) { setCurrentView('dashboard'); } else { setCurrentView('home'); } }}>
           <img src="/logo.png" className="w-8 h-8 rounded-lg object-cover border border-white/10 shadow-[0_0_10px_rgba(255,255,255,0.1)] active:scale-95 transition-all" alt="Inter Storage Logo" />
@@ -2635,7 +2639,7 @@ function App() {
       <div className="absolute top-[72px] left-0 right-0 h-[1px] bg-white/10 w-full z-10 pointer-events-none" />
 
       {currentView === 'dashboard' && (
-        <div className="absolute top-[72px] left-0 right-0 h-[56px] flex items-center justify-end px-3 sm:px-6 z-20 pointer-events-none w-full border-b border-white/10" dir="rtl">
+        <div className="absolute top-[72px] left-0 right-0 h-[56px] flex items-center justify-end px-3 sm:px-6 min-[1080px]:px-[185px] xl:px-[215px] z-20 pointer-events-none w-full border-b border-white/10" dir="rtl">
           <div className="flex items-center justify-end gap-2 sm:gap-4 flex-shrink-0">
             {selectedTexts.size > 0 && (
               <div className="flex items-center pointer-events-none">
@@ -3154,7 +3158,7 @@ function App() {
       )}
 
       {currentView === 'dashboard' && texts.length > 0 && (
-        <div className="absolute inset-0 pt-[140px] px-3 sm:px-6 flex flex-col items-center pointer-events-none w-full h-full overflow-hidden" dir="ltr">
+        <div className="absolute inset-0 pt-[140px] px-3 sm:px-6 min-[1080px]:px-[185px] xl:px-[215px] flex flex-col items-center pointer-events-none w-full h-full overflow-hidden" dir="ltr">
           {/* Texts list */}
           <div className="flex-1 w-full pointer-events-auto overflow-y-auto custom-scrollbar" dir="rtl">
             <>
