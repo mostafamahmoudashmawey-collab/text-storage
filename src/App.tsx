@@ -1089,7 +1089,7 @@ const updatePasswordInDB = async (id: string, newPass: string) => {
   }
 };
 
-function App() {
+function OriginalApp() {
   const [language, setLanguage] = useState<Language>('en');
   const [tempLanguage, setTempLanguage] = useState<Language | null>(null);
   const [showLanguagePopup, setShowLanguagePopup] = useState(false);
@@ -5367,5 +5367,18 @@ className={`bg-transparent px-3 text-sm font-medium transition-colors outline-no
   );
 }
 
-export default App;
+export default function App() {
+  return (
+    <div className="fixed inset-0 z-[999999] flex flex-col items-center justify-center min-h-screen w-full bg-black text-white text-center px-4 select-none">
+      <div className="flex flex-col items-center justify-center space-y-3">
+        <h1 className="text-2xl sm:text-3xl md:text-4xl font-bold tracking-tight text-white" dir="rtl">
+          الموقع مغلق حالياً.
+        </h1>
+        <h2 className="text-lg sm:text-xl md:text-2xl font-medium text-neutral-300" dir="ltr">
+          The site is currently closed.
+        </h2>
+      </div>
+    </div>
+  );
+}
 
